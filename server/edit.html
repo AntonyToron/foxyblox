@@ -1,0 +1,16 @@
+<!-- .Title refers to field of p passed in via template -->
+<h1>Editing {{.Title}}</h1>
+
+<form action="/save/{{.Title}}" method="POST">
+    <div>
+        <!-- print as a string instead of stream of bytes, same as fmt.Printf
+        Note: template package guarantees SAFE and correct-looking HTML, i.e.
+        > is replaced with &gt, etc.
+        -->
+        <textarea name="body" rows="20" cols="80">{{printf "%s" .Body}}
+        </textarea>
+    </div>
+    <div>
+        <input type="submit" value="Save">
+    </div>
+</form>
