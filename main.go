@@ -10,11 +10,13 @@ package main
 
 import (
     //"fmt"
-    "foxyblox/server"
+    //"foxyblox/server"
+    "foxyblox/bash"
 )
 
 /*
 */
 func main() {
-    server.Run() // note: to use function in another package, need capital R
+    //server.Run() // note: to use function in another package, need capital R
+    bash.Run()
 }
