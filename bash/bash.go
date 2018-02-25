@@ -14,7 +14,6 @@ import (
     "strings"
     "bufio"
     "os"
-    "io/ioutil"
     "log"
     "path/filepath"
     "math"
@@ -22,6 +21,7 @@ import (
 )
 
 const MAX_BUFFER_SIZE int = 1024;
+const STRIP_COUNT int64 = 3;
 
 // storageType
 const LOCALHOST int = 0;
@@ -46,6 +46,16 @@ func nextToken(line string) (string, int) {
     for (i < len(line) && line[i] == ' ') {i++}
     token := line[j:j + k]
     return token, i
+}
+
+func openFile(path string) (*os.File, error) {
+    if _, err := os.Stat(path); os.IsNotExist(err) {
+        file, err := os.Create(path)
+        return file, err
+    } else {
+        file, err := os.Create(path)
+        return file, err
+    }
 }
 
 /*
@@ -99,24 +109,52 @@ func nextToken(line string) (string, int) {
         b) Create a persistent data storage system to save information about
         individual files and the locations of their storage (temporary solution
         is a file)
+        c) The file may or may not be an exact multiple of the strip count, in
+        which case padding should be added to the end of the file (add a 1 and
+        0 to 2 bits of 0s - you need at least one bit of padding which will end
+        up as at least 1 byte most likely)
 
 */
 func saveFile(path string, storageType int) {
-    const STRIP_COUNT int = 3;
+    //const STRIP_COUNT int64 = 3; // issue: might not be divisible by 3, padding?**
 
     filename := filepath.Base(path);
+    fmt.Printf("Filename: %s, path = %s\n", filename, path)
+    //file, err := os.Open(path); check(err);
     file, err := os.Open(path); check(err);
 
     fileStat, err := file.Stat(); check(err);
     size := fileStat.Size(); // in bytes
+    fmt.Printf("Size of file: %d\n", size)
+    /*
+        Calculate length of the strips the file will be divided into
+        Add padding to the last strip of the file to be even multiple of
+        STRIP_COUNT
+    */
+    remainder := size % STRIP_COUNT;
+    var stripLength int64 = size / STRIP_COUNT; // may be > MAX_BUFFER_SIZE
+    var padding int64 = 0
+    if remainder == 0 {
+        /*
+            Each strip will have one extra byte in it, and the last strip will
+            have STRIP_COUNT bytes of padding, since we need at least one
+            byte of padding and all strips should be of the same size
+        */
+        stripLength += 1;
+        padding = STRIP_COUNT
+    } else {
+        /*
+            The last strip will have <remainder> bytes of padding
+        */
+        stripLength = (size + remainder) / STRIP_COUNT;
+        padding = remainder
+    }
 
-    stripLength := size / STRIP_COUNT; // may be > MAX_BUFFER_SIZE
-
-    buf_size := math.Min(MAX_BUFFER_SIZE, component_length);
+    fmt.Printf("Strip length: %d\n", stripLength)
 
     switch storageType {
         case LOCALHOST:
-            saveLocalhost(file, filename, stripLength, size)
+            saveLocalhost(file, filename, stripLength, size, padding)
         case EBS:
             fmt.Println("Not implemented")
         default:
@@ -126,37 +164,66 @@ func saveFile(path string, storageType int) {
     // file.Close(); <-- currently saveLocalhost does this for you
 }
 
-type readOp struct {
-    start int
-    end int
-    response chan []byte // channel to send back the read bytes
-}
-
 type readResponse struct {
     payload []byte
     err error
 }
 
-func parityWriter(location string, parityChannel chan []byte, c *Cond, 
-                  condition *bool, completionChannel chan int, 
-                  writerCount int) {
-    parityFile, err := os.Open(location); check(err);
-    *condition = false // should initially be false, to pause writers
+type readOp struct {
+    start int64
+    end int64
+    response chan *readResponse
+    //response chan []byte // channel to send back the read bytes
+}
+
+// condition based on this payloadCount
+//var payloadCount int = 0;
+
+// assumed that lock is acquired to call this
+func condition(payloadCount *int) bool {
+    return int64(*payloadCount) < STRIP_COUNT;
+}
+
+// alternate design: can hold multiple parityStrips in memory and release them
+// once done with them (attach a tag to the buffer sent in parityChannel to
+// know to which parityStrip this goes to)
+func parityWriter(location string, parityChannel chan []byte, c *sync.Cond, 
+                  payloadCount *int, completionChannel chan int, 
+                  writerCount int64) {
+    parityFile, err := openFile(location); check(err)
+    //*condition = false // should initially be false, to pause writers
 
     // unsigned parity strip
     parityStrip := make([]byte, MAX_BUFFER_SIZE)
-    payloadCount := 0
-    currentLocation := 0
+    //payloadCount := 0
+    var currentLocation int64 = 0
+    localPayloadCount := 0
     for payload := range parityChannel { // also know job is done when buffers < max size
-        payloadCount++
+        //(*payloadCount)++
+        localPayloadCount++
 
-        if payloadCount == 3 { // got all necessary parity bits
-            payloadCount = 0
+        if localPayloadCount == 1 {
+            // may need to shrink the parity strip
+            if  len(payload) < MAX_BUFFER_SIZE || len(payload) < len(parityStrip) {
+                fmt.Println("Shrinking parity strip");
+                parityStrip = make([]byte, len(payload))
+            }
+        }
 
+        // XOR with current parityStrip
+        // assert that parity strip length is same as payload length here
+        fmt.Printf("Length of payload: %d, length of parityStrip: %d\n", len(payload), len(parityStrip))
+        for i := 0; i < len(payload); i++ {
+            parityStrip[i] ^= payload[i]
+        }
+
+        if localPayloadCount == 3 { // got all necessary parity bits
             // can let the writers continue, perform this before initiating IO
             // to not block writers longer than necessary
             c.L.Lock()
-            *condition = true
+            *payloadCount = 0
+            localPayloadCount = 0
+            //*condition = true
             c.Broadcast()
             c.L.Unlock()
 
@@ -164,63 +231,59 @@ func parityWriter(location string, parityChannel chan []byte, c *Cond,
             _, err := parityFile.WriteAt(parityStrip, currentLocation)
             check(err) // err will be not nil if all bytes written, may need to custom handle
 
-            currentLocation += len(parityStrip)
-
-            c.L.Lock()
-            *condition = false // pause writers when they finish next time
-            c.L.Unlock()
-
-        } else if payloadCount == 1 {
-            // may need to shrink the parity strip
-            if  len(payload) < MAX_BUFFER_SIZE {
-                parityStrip := make([]byte, len(payload))
-            }
-        }
-
-        // may need to check length of received payload here
-        // XOR with current parityStrip
-        for i := 0; i < len(payload); i++ {
-            parityStrip ^= payload[i]
+            currentLocation += int64(len(parityStrip))
         }
     }
 
     completionChannel <- 0 // success
+    fmt.Println("Parity writer exiting");
 }
 
-func reader(originalFile *File, readRequests chan<- *readOp) {
+func reader(originalFile *os.File, readRequests <-chan *readOp) {
     for request := range readRequests { // finish when channel closes
-        readBuf := make([]byte, readRequest.end - readRequest.start)
-        _, err := originalFile.ReadAt(readBuf, readRequest.start)
+        fmt.Printf("Read request from %d to %d\n", request.start, request.end)
+        readBuf := make([]byte, request.end - request.start)
+        _, err := originalFile.ReadAt(readBuf, request.start)
         // note: like writing, err will be non-nil here if numRead < len(readBuf)
-        check(err)
+        // check(err) <- might not need to check here, since err is sent in response
 
-        readRequest.response <- readBuf
+        response := &readResponse {
+            payload: readBuf,
+            err: err}
+
+        request.response <- response
     }
+    fmt.Println("Reader exiting");
 }
 
-func writer(start int, end int, location string, readRequests chan<- *readOp,
-            parityChannel chan []byte, c *Cond, condition *bool,
-            completionChannel chan int) {
+func writer(start int64, end int64, location string, readRequests chan<- *readOp,
+            parityChannel chan []byte, c *sync.Cond, payloadCount *int,
+            completionChannel chan int, padding int64) {
     /*
         Issue read requests from original file until you have written your 
         entire strip to disk
     */
-    var currentLocation int = start;
-    for currentLocation != end {
+    fmt.Printf("Writer initialized from %d to %d\n", start, end)
+    file, err := openFile(location); check(err) // file to write into
+    var currentLocation int64 = start;
+    var locationInOutputFile int64 = 0;
+    for currentLocation != end { // should be <= for debugging?
         // construct a read request
-        endLocation := math.Min(currentLocation + MAX_BUFFER_SIZE, end);
+        endLocation := int64(math.Min(float64(currentLocation + int64(MAX_BUFFER_SIZE)), 
+                                float64(end)));
+        
         read := &readOp {
             start: currentLocation,
             end: endLocation,
-            response: make(chan []byte)
-        }
+            response: make(chan *readResponse)}
 
         readRequests <- read
-        readReponse <- read.response // get the response from the reader, blocking
-        check(readResponse.err);
-        if (len(readResponse.payload) < (endLocation - currentLocation)) {
+        response := <- read.response // get the response from the reader, blocking
+        check(response.err);
+        var payloadLength int64 = int64(len(response.payload))
+        if (payloadLength < (endLocation - currentLocation)) {
             fmt.Println("Didn't read as many bytes as wanted");
-            currentLocation += len(readResponse.payload);
+            currentLocation += payloadLength;
         } else {
             currentLocation = endLocation;
         }
@@ -228,27 +291,50 @@ func writer(start int, end int, location string, readRequests chan<- *readOp,
         // PAUSE HERE - before sending more payloads to the parity channel,
         // ensure that all of the other writers have also finished their tasks
         c.L.Lock()
-        for !*condition {
+        for !condition(payloadCount) {
             c.Wait()
         }
         c.L.Unlock()
 
+        // compute the true payload: it is possible that padding should be added
+        // to this payload, so if padding is non-zero, add that many bytes
+        // but only if this is the last iteration (i.e. currentLocation == end)
+        if padding != 0 && currentLocation == end {
+            paddingSlice := make([]byte, int(padding))
+            paddingSlice[0] = 0x80
+            response.payload = append(response.payload, paddingSlice...)
+        }
+
         // send over the payload to the parity writer before initiating IO
-        parityChannel <- readResponse.payload
+        parityChannel <- response.payload
+        c.L.Lock()
+        (*payloadCount)++
+        c.L.Unlock()
 
         // write the payload to the end file
-        file, err := os.Open(location); check(err);
-        _, err := file.WriteAt(readResponse.payload, start)
+        _, err := file.WriteAt(response.payload, locationInOutputFile)
+        locationInOutputFile += int64(len(response.payload))
         // note: will error if numWritten < length of payload!!, may need to
         // do custom error handle here
         check(err)
     }
 
+    // add padding (if not 0)
+    /*
+    if padding != 0 {
+        paddingSlice := make([]byte, int(padding))
+        paddingSlice[0] = 0x80 // padding byte = 1000 0000
+        file.WriteAt(paddingSlice, locationInOutputFile)
+    }
+    */
+
     // return and let people know you are done
     completionChannel <- 0 // success
+    fmt.Println("Writer exiting");
 }
 
-func saveLocalhost(originalFile *File, filename string, stripLength int, fileSize int) {
+func saveLocalhost(originalFile *os.File, filename string, stripLength int64, fileSize int64,
+                   padding int64) {
     // make: make allocates memory and initializes an object of type slice, map
     // or chan (only), while new only allocates the memory, but leaves it zeroed
 
@@ -278,42 +364,61 @@ func saveLocalhost(originalFile *File, filename string, stripLength int, fileSiz
     // -> the parity drive only broadcasts when it has successfully written the
     // parity data and is ready for the next batch to come in
 
-    const STRIP_COUNT int = 3; // analogous to saying "writer count"
+    // const STRIP_COUNT int = 3; // analogous to saying "writer count"
 
     readRequests := make(chan *readOp, STRIP_COUNT)
     parityChannel := make(chan []byte, STRIP_COUNT)
     completionChannel := make(chan int, STRIP_COUNT + 1)
 
     m := sync.Mutex{};
-    m.Lock();
+    //m.Lock();
     c := sync.NewCond(&m);
-    condition := false
+
+    // "global" condition check, increment when you send, parity writer broadcasts when
+    // it is done processing the payloadCount = 3 condition
+    payloadCount := 0
+    //condition := false
 
     // initiate a reader
     go reader(originalFile, readRequests)
 
     // initiate a parity writer (make these strings constants at the top)
     go parityWriter("./storage/drivep/" + filename + "_p", parityChannel, c,
-                    &condition, completionChannel, STRIP_COUNT)
+                    &payloadCount, completionChannel, STRIP_COUNT)
 
     // initiate the writers
-    for i := 0; i < STRIP_COUNT; i++ {
-        // calculate start and end of this writer
-        go writer(i * stripLength, (i + 1) * stripLength,
-                  "./storage/drive" + i + "/" + filename + "_" + i, 
-                  readRequests, parityChannel, c, &condition, completionChannel)
+    for i := int64(0); i < STRIP_COUNT; i++ {
+        // "./storage/drive" + i + "/" + filename + "_" + i,
+        storageFile := fmt.Sprintf("./storage/drive%d/%s_%d", i + 1, filename, i + 1)
+        // if this is the writer responsible for the last strip of the file,
+        // must add padding
+        if (i == STRIP_COUNT - 1) {
+
+            go writer(i * stripLength, (i + 1) * stripLength - padding,
+                  storageFile, readRequests, parityChannel, c, &payloadCount, 
+                  completionChannel, padding)
+        } else {
+            // calculate start and end of this writer
+            go writer(i * stripLength, (i + 1) * stripLength,
+                  storageFile, readRequests, parityChannel, c, &payloadCount, 
+                  completionChannel, 0) // no padding necessary in earlier strips
+        }
     }
 
-    // wait for all of the writers (and the parity writer) to be done
-    for i := 0; i < STRIP_COUNT + 1; i++ {
+    // wait for all of the writers to be done
+    for i := int64(0); i < STRIP_COUNT; i++ {
         <- completionChannel // may want to get error codes here
     }
 
-    close(completionChannel) // don't need it anymore
     close(parityChannel) // stop the parity writer
+
+    // wait until the parity writer finishes
+    <- completionChannel
+
+    close(completionChannel) // don't need it anymore
     close(readRequests) // stop the reader channel
 
-    file.Close()
+    originalFile.Close()
 }
 
 func Run() {
@@ -332,15 +437,27 @@ func Run() {
         if (strings.Compare(command, "save") == 0) {
             path, position := nextToken(line)
             line = line[position:]
-            level, position := nextToken(line)
+            storageType, position := nextToken(line)
             line = line[position:]
 
-            if (strings.Compare(path, "") == 0 || strings.Compare(level, "") == 0) {
-                fmt.Println("usage: save [path] [raid level]");
+            if (strings.Compare(path, "") == 0 || strings.Compare(storageType, "") == 0) {
+                fmt.Println("usage: save [path] [storage type]");
                 break;
             }
 
-            saveFile(path, level);
+            var t int = 0;
+            switch storageType {
+            case "localhost":
+                t = LOCALHOST;
+            case "ebs":
+                t = EBS;
+            default:
+                fmt.Println("not implemented yet");
+                break;
+            }
+
+
+            saveFile(path, t);
 
             fmt.Println("Saved file.")
         } else if (strings.Compare(command, "download") == 0) {
