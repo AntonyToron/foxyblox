@@ -182,7 +182,7 @@ type readResponse struct {
 
 type readOp struct {
     start int64
-    end int64
+    numBytes int64
     response chan *readResponse
     //response chan []byte // channel to send back the read bytes
 }
@@ -218,6 +218,8 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
             if  len(payload) < MAX_BUFFER_SIZE || len(payload) < len(parityStrip) {
                 parityStrip = make([]byte, len(payload))
                 shrink = true
+            } else {
+                parityStrip = make([]byte, MAX_BUFFER_SIZE)
             }
         }
 
@@ -261,6 +263,11 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
             check(err) // err will be not nil if all bytes written, may need to custom handle
 
             currentLocation += int64(len(parityStrip))
+
+            /*
+                Reset parity strip
+            */
+
         }
     }
 
@@ -270,8 +277,9 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
 
 func reader(originalFile *os.File, readRequests <-chan *readOp) {
     for request := range readRequests { // finish when channel closes
-        //fmt.Printf("Read request from %d to %d\n", request.start, request.end)
-        readBuf := make([]byte, request.end - request.start)
+        //fmt.Printf("Read request from %d to %d\n", request.start, request.start + request.numBytes)
+        //readBuf := make([]byte, request.end - request.start)
+        readBuf := make([]byte, request.numBytes)
         _, err := originalFile.ReadAt(readBuf, request.start)
         // note: like writing, err will be non-nil here if numRead < len(readBuf)
         // check(err) <- might not need to check here, since err is sent in response
@@ -298,24 +306,28 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
     var locationInOutputFile int64 = 0;
     for currentLocation != end { // should be <= for debugging?
         // construct a read request
-        endLocation := int64(math.Min(float64(currentLocation + int64(MAX_BUFFER_SIZE)), 
-                                float64(end)));
+        //endLocation := int64(math.Min(float64(currentLocation + int64(MAX_BUFFER_SIZE)), 
+        //                        float64(end)));
+        num := int64(math.Min(float64(MAX_BUFFER_SIZE), float64(end - currentLocation)))
         
         read := &readOp {
             start: currentLocation,
-            end: endLocation,
+            numBytes: num,
+            //end: endLocation,
             response: make(chan *readResponse)}
 
         readRequests <- read
         response := <- read.response // get the response from the reader, blocking
         check(response.err);
         var payloadLength int64 = int64(len(response.payload))
-        if (payloadLength < (endLocation - currentLocation)) {
+        if (payloadLength < num) { //(endLocation - currentLocation)
             fmt.Println("Didn't read as many bytes as wanted");
             currentLocation += payloadLength;
         } else {
-            currentLocation = endLocation;
+            //currentLocation = endLocation + 1;
+            currentLocation += payloadLength;
         }
+
 
         // PAUSE HERE - before sending more payloads to the parity channel,
         // ensure that all of the other writers have also finished their tasks

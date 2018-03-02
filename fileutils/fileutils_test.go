@@ -17,7 +17,7 @@ import (
 )
 
 const SMALL_FILE_SIZE int = 1024
-var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(13))) //int64(math.Pow(2, float64(30))) // 1 GB
+var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(24))) //int64(math.Pow(2, float64(30))) // 1 GB
 
 func TestSavingCorrectnessSmallFile(t *testing.T) {
     os.Chdir("../") // go back to home directory
