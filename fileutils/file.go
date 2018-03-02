@@ -15,6 +15,7 @@ import (
     "path/filepath"
     "math"
     "sync"
+    "errors"
 )
 
 const MAX_BUFFER_SIZE int = 1024; //1024
@@ -36,8 +37,7 @@ var allowances []bool
 var allowanceLocks []sync.Mutex
 var allowanceConditions []*sync.Cond
 
-func init() {
-    fmt.Println("initializing fileutils")
+func initialize() {
     payloadCount = 0
     m = sync.Mutex{};
     c = sync.NewCond(&m);
@@ -49,7 +49,6 @@ func init() {
         allowances[i] = true
         allowanceConditions[i] = sync.NewCond(&allowanceLocks[i]);
     }
-
 }
 
 
@@ -187,38 +186,25 @@ type readOp struct {
     //response chan []byte // channel to send back the read bytes
 }
 
-// condition based on this payloadCount
-//var payloadCount int = 0;
-
-// assumed that lock is acquired to call this
-func condition() bool {
-    return int64(payloadCount) == STRIP_COUNT;
-}
-
 // alternate design: can hold multiple parityStrips in memory and release them
 // once done with them (attach a tag to the buffer sent in parityChannel to
 // know to which parityStrip this goes to)
 func parityWriter(location string, parityChannel chan []byte, completionChannel chan int, 
                   writerCount int64) {
     parityFile, err := openFile(location); check(err)
-    //*condition = false // should initially be false, to pause writers
 
     // unsigned parity strip
     parityStrip := make([]byte, MAX_BUFFER_SIZE)
-    //payloadCount := 0
     var currentLocation int64 = 0
     localPayloadCount := 0
-    var shrink bool = false;
     for payload := range parityChannel { // also know job is done when buffers < max size
-        //(*payloadCount)++
         localPayloadCount++
-        shrink = false
         if localPayloadCount == 1 {
             // may need to shrink the parity strip
             if  len(payload) < MAX_BUFFER_SIZE || len(payload) < len(parityStrip) {
                 parityStrip = make([]byte, len(payload))
-                shrink = true
             } else {
+                // reset parityStrip
                 parityStrip = make([]byte, MAX_BUFFER_SIZE)
             }
         }
@@ -226,11 +212,9 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
         // XOR with current parityStrip
         // assert that parity strip length is same as payload length here
         if (len(payload) != len(parityStrip)) {
-            fmt.Println("Error: length of payload and parityStrip don't match")
-            fmt.Printf("Payload = %d, parityStrip = %d\n", len(payload), len(parityStrip))
-            if (!shrink) {
-                fmt.Println("Didn't shrink.")
-            }
+            err := errors.New("Error: length of payload and partyStrip don't match")
+            check(err)
+            //fmt.Printf("Payload = %d, parityStrip = %d\n", len(payload), len(parityStrip))
         }
         for i := 0; i < len(payload); i++ {
             parityStrip[i] ^= payload[i]
@@ -251,23 +235,11 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
                 allowanceLock.Signal() // let this writer continue
             }
 
-            // c.L.Lock()
-            // payloadCount = 0
-            // localPayloadCount = 0
-            // //*condition = true
-            // c.L.Unlock() // flipping these two lines made a performance difference?
-            // c.Broadcast()
-
             // can write the parity buffer to the parity drive now (at currentLocation)
             _, err := parityFile.WriteAt(parityStrip, currentLocation)
             check(err) // err will be not nil if all bytes written, may need to custom handle
 
             currentLocation += int64(len(parityStrip))
-
-            /*
-                Reset parity strip
-            */
-
         }
     }
 
@@ -313,18 +285,16 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
         read := &readOp {
             start: currentLocation,
             numBytes: num,
-            //end: endLocation,
             response: make(chan *readResponse)}
 
         readRequests <- read
         response := <- read.response // get the response from the reader, blocking
         check(response.err);
         var payloadLength int64 = int64(len(response.payload))
-        if (payloadLength < num) { //(endLocation - currentLocation)
+        if (payloadLength < num) {
             fmt.Println("Didn't read as many bytes as wanted");
             currentLocation += payloadLength;
         } else {
-            //currentLocation = endLocation + 1;
             currentLocation += payloadLength;
         }
 
@@ -354,54 +324,13 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
 
         personalLock.L.Unlock()
 
-        // c.L.Lock()
-        // for !condition() {
-        //     c.Wait()
-        // }
-        // c.L.Unlock()
-
-        // // compute the true payload: it is possible that padding should be added
-        // // to this payload, so if padding is non-zero, add that many bytes
-        // // but only if this is the last iteration (i.e. currentLocation == end)
-        // if padding != 0 && currentLocation == end {
-        //     paddingSlice := make([]byte, int(padding))
-        //     paddingSlice[0] = 0x80
-        //     response.payload = append(response.payload, paddingSlice...)
-        // }
-
-        // send over the payload to the parity writer before initiating IO
-        // c.L.Lock()
-        // payloadCount++
-        // c.L.Unlock()
-
-        // parityChannel <- response.payload
-        // c.L.Lock() // or && payloadCount == 3 above
-        // parityChannel <- response.payload
-        // //c.L.Lock()
-        // (payloadCount)++
-        // c.L.Unlock()
-
         // write the payload to the end file
         _, err := file.WriteAt(response.payload, locationInOutputFile)
         locationInOutputFile += int64(len(response.payload))
         // note: will error if numWritten < length of payload!!, may need to
         // do custom error handle here
         check(err)
-
-
-        /*
-            Wait for parity writer to be ready for new line of messages
-        */
     }
-
-    // add padding (if not 0)
-    /*
-    if padding != 0 {
-        paddingSlice := make([]byte, int(padding))
-        paddingSlice[0] = 0x80 // padding byte = 1000 0000
-        file.WriteAt(paddingSlice, locationInOutputFile)
-    }
-    */
 
     // return and let people know you are done
     completionChannel <- 0 // success
@@ -439,29 +368,12 @@ func saveLocalhost(originalFile *os.File, filename string, stripLength int64, fi
     // -> the parity drive only broadcasts when it has successfully written the
     // parity data and is ready for the next batch to come in
 
-    // const STRIP_COUNT int = 3; // analogous to saying "writer count"
-
     readRequests := make(chan *readOp, STRIP_COUNT)
     parityChannel := make(chan []byte, STRIP_COUNT)
     completionChannel := make(chan int, STRIP_COUNT + 1)
 
-    // globally defined
-    m = sync.Mutex{};
-    c = sync.NewCond(&m);
-
-    // "global" condition check, increment when you send, parity writer broadcasts when
-    // it is done processing the payloadCount = 3 condition
-    payloadCount = 0
-    parityWriterReady = false
-    allowances = make([]bool, STRIP_COUNT)
-    allowanceLocks = make([]sync.Mutex, STRIP_COUNT)
-    allowanceConditions = make([]*sync.Cond, STRIP_COUNT)
-    for i := 0; i < len(allowanceConditions); i++ {
-        allowances[i] = true
-        allowanceConditions[i] = sync.NewCond(&allowanceLocks[i]);
-    }
-
-    //condition := false
+    // initializes all of the global condition variables and mutexes
+    initialize()
 
     // initiate a reader
     go reader(originalFile, readRequests)
