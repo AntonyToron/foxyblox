@@ -91,7 +91,10 @@ func Run() {
                 break;
             }
 
+            // download back to current location
+            fileutils.GetFile(filename, LOCALHOST)
 
+            fmt.Println("Retreived file.")
         } else { // quit
             break;
         }
