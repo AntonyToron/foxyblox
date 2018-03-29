@@ -17,6 +17,7 @@ import (
 )
 
 const SMALL_FILE_SIZE int = 1024
+
 var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(24))) //int64(math.Pow(2, float64(30))) // 1 GB
 
 func TestSavingCorrectnessSmallFile(t *testing.T) {
@@ -51,6 +52,7 @@ func TestSavingCorrectnessSmallFile(t *testing.T) {
         }
 
         size := fileStat.Size()
+        size -= MD5_SIZE // strip off the hash at the end
 
         fileBuffer := make([]byte, size)
         file.ReadAt(fileBuffer, 0)
@@ -70,6 +72,7 @@ func TestSavingCorrectnessSmallFile(t *testing.T) {
     }
 
     size := fileStat.Size()
+    size -= MD5_SIZE // strip off the hash at the end
 
     fileBuffer := make([]byte, size)
     file.ReadAt(fileBuffer, 0)
@@ -122,7 +125,7 @@ func TestSavingCorrectnessLargeFile(t *testing.T) {
         }
 
         size := fileStat.Size()
-
+        size -= MD5_SIZE // strip off the hash at the end
         fileBuffer := make([]byte, size)
         file.ReadAt(fileBuffer, 0)
         for j := 0; j < int(size); j++ {
@@ -141,6 +144,7 @@ func TestSavingCorrectnessLargeFile(t *testing.T) {
     }
 
     size := fileStat.Size()
+    size -= MD5_SIZE // strip off the hash at the end
 
     fileBuffer := make([]byte, size)
     file.ReadAt(fileBuffer, 0)

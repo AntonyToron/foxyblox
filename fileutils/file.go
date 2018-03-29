@@ -17,10 +17,16 @@ import (
     "sync"
     "errors"
     // "crypto/sha256"
+    "crypto/md5"
+    "os/exec"
+    "bytes"
+    "strings"
+    // "time"
 )
 
 const MAX_BUFFER_SIZE int = 1024; //1024
 const STRIP_COUNT int64 = 3;
+const MD5_SIZE = md5.Size;
 
 // storageType
 const LOCALHOST int = 0;
@@ -145,10 +151,6 @@ func SaveFile(path string, storageType int) {
     remainder := size % STRIP_COUNT;
     // may be > MAX_BUFFER_SIZE
     var stripLength int64 = int64(math.Ceil(float64(size) / float64(STRIP_COUNT)));
-    fmt.Printf("10 / 3 = %d\n", 10 / 3)
-    fmt.Printf("11 / 3 = %d\n", 10 / 3)
-    fmt.Printf("29 / 3 = %d\n", 29 / 3)
-    fmt.Printf("Strip length: %d\n", stripLength)
     var padding int64 = 0
     if remainder == 0 {
         /*
@@ -206,6 +208,12 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
     parityStrip := make([]byte, MAX_BUFFER_SIZE)
     var currentLocation int64 = 0
     localPayloadCount := 0
+
+    /*
+        Save hash of parity file as well
+    */
+    currentHash := md5.New()
+
     for payload := range parityChannel { // also know job is done when buffers < max size
         localPayloadCount++
         if localPayloadCount == 1 {
@@ -249,8 +257,22 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
             check(err) // err will be not nil if all bytes written, may need to custom handle
 
             currentLocation += int64(len(parityStrip))
+
+            // update hash
+            currentHash.Write(parityStrip)
         }
     }
+
+    /*
+        Append the hash to the end of the parity file, can later put the length
+        of the hash if this is necessary (appended to the end at a constant known
+        to me)
+    */
+    finalHash := currentHash.Sum(nil)
+    _, err = parityFile.WriteAt(finalHash, currentLocation)
+    check(err)
+
+    parityFile.Close()
 
     completionChannel <- 0 // success
     fmt.Println("Parity writer exiting");
@@ -271,6 +293,7 @@ func reader(originalFile *os.File, readRequests <-chan *readOp) {
 
         request.response <- response
     }
+
     fmt.Println("Reader exiting");
 }
 
@@ -286,12 +309,28 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
     file, err := openFile(location); check(err) // file to write into
     var currentLocation int64 = start;
     var locationInOutputFile int64 = 0;
+
+    /*
+        Keep a temporary hash variable, using MD5 for sake of practicality (faster)
+        Init = MD5(buffer_1) // where buffer1 is the first buffer in my loop over file
+
+        for all buffer_i, set the temporary variable = MD5(temporary variable | MD5(buffer_i))
+
+        Final value of the temporary variable will be the checksum for the file overall
+        Compute the checksum the same way when downloading this component
+
+        Alternate temporary solution = 
+        h := md5.New()
+        io.WriteString(h, data) // for all buffers, actually h.Write(buffer) for []byte
+
+        h.Sum(nil) // final checksum
+
+    */
+    currentHash := md5.New()
+
     for currentLocation < end { // should be <= for debugging? !=
         // construct a read request
-        //endLocation := int64(math.Min(float64(currentLocation + int64(MAX_BUFFER_SIZE)), 
-        //                        float64(end)));
         num := int64(math.Min(float64(MAX_BUFFER_SIZE), float64(end - currentLocation)))
-        fmt.Printf("Going to read %d bytes, ending defined as %d\n", num, end)
         read := &readOp {
             start: currentLocation,
             numBytes: num,
@@ -322,27 +361,8 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
         // but only if this is the last iteration (i.e. currentLocation == end)
         if padding != 0 && currentLocation == end {
             paddingSlice := make([]byte, int(padding))
-            paddingSlice[0] = 0x80
-            fmt.Printf("Padding slice")
-            for i := 0; i < int(padding); i++ {
-                fmt.Printf("%x ", paddingSlice[i])
-            }
-            fmt.Printf("\n")
-            fmt.Printf("Length of raw = %d\n", len(response.payload))
-            fmt.Printf("Length of padding = %d\n", len(paddingSlice))
-
-            for i := 0; i < len(response.payload); i++ {
-                fmt.Printf("%x ", response.payload[i])
-            }
-            fmt.Printf("\n")
-
+            paddingSlice[0] = 0x80         
             response.payload = append(response.payload, paddingSlice...)
-            fmt.Printf("Length of concatenated = %d\n", len(response.payload))
-
-            for i := 0; i < len(response.payload); i++ {
-                fmt.Printf("%x ", response.payload[i])
-            }
-            fmt.Printf("\n")
         }
 
         // send once you know you can
@@ -359,7 +379,25 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
         // note: will error if numWritten < length of payload!!, may need to
         // do custom error handle here
         check(err)
+
+        // update the hash
+        currentHash.Write(response.payload)
     }
+    
+    /*
+        Compute final hash of the file, and append it to the end of the file
+    */
+    // startTime := time.Now()
+    finalHash := currentHash.Sum(nil)
+    // elapsed := time.Since(startTime)
+    // fmt.Printf("Hash took %s", elapsed)
+
+    fmt.Printf("Final hash: %x, length = %d\n", finalHash, len(finalHash))
+
+    _, err = file.WriteAt(finalHash, locationInOutputFile)
+    check(err)
+
+    file.Close()
 
     // return and let people know you are done
     completionChannel <- 0 // success
@@ -447,6 +485,189 @@ func saveLocalhost(originalFile *os.File, filename string, stripLength int64, fi
 }
 
 /*
+    It has been determined that the drive with ID driveID is corrupted, when
+    reading a portion of the file, located in offendingFile. Fix the drive by
+    running fsck on it or some variant of this (to stop using the bad sectors
+    that corrupted this file), and then rewrite this portion of the file again,
+    by getting the correct version of it by using the other drives to recover.
+*/
+func recoverFromDriveFailure(driveID int, offendingFile *os.File, 
+                            offendingFileLocation string, outputFile *os.File, 
+                            storageType int, isParityDisk bool, hadPadding bool) {
+    /*
+        Fix the drive, if appropriate
+    */
+    if storageType == EBS {
+        driveName := fmt.Sprintf("drive%d", driveID + 1)
+        cmd := exec.Command("fsck", driveName)
+
+        var out bytes.Buffer
+        cmd.Stdout = &out
+        err := cmd.Run()
+        check(err)
+
+        fmt.Printf("Fsck stdout: %q\n", out.String())
+    }
+
+    /*
+        Delete the offending file, and recreate it with the correct data
+    */
+    oName := offendingFile.Name()
+    offendingFile.Close()
+    os.Remove(offendingFileLocation)
+
+    fixedFile, err := openFile(offendingFileLocation); check(err)
+
+    rawFileName := oName
+    lastIndex := strings.LastIndex(rawFileName, "_")
+    rawFileName = rawFileName[:lastIndex] // cut off the _driveID part    
+
+    if !isParityDisk {
+        // read all of the other disks besides this one, and XOR with the parity
+        // disk bit by bit and reconstruct the file
+        // NOTE: this can be done much more efficiently by issuing more IO requests
+        // and using a similar approach as the original saving of the file, but
+        // when recovering the file, performance isn't as big of an issue because
+        // of the rarity of the occasion (temporary implementation)
+
+        otherDriveFiles := make([]*os.File, STRIP_COUNT - 1)
+
+        parityDriveFileName := fmt.Sprintf("storage/drivep/%s_p", rawFileName)
+        parityDriveFile, err := openFile(parityDriveFileName)
+        
+        count := 0
+        for i := 0; i < int(STRIP_COUNT); i++ {
+            if i != driveID {
+                tmpName := fmt.Sprintf("storage/drive_%d/%s_%d", i + 1, rawFileName, i + 1)
+                otherDriveFiles[count], err = openFile(tmpName); check(err)
+
+                count++
+            }
+        }
+
+        fileStat, err := parityDriveFile.Stat(); check(err);
+        size := fileStat.Size(); // in bytes
+
+        trueParityStrip := make([]byte, MAX_BUFFER_SIZE)
+        buf := make([]byte, MAX_BUFFER_SIZE)
+
+        var currentLocation int64 = 0
+        lastBuffer := false
+        for currentLocation != size {
+            // check if need to resize the buffers
+            if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
+                lastBuffer = true
+                newSize := size - currentLocation
+
+                trueParityStrip = make([]byte, newSize)
+                buf = make([]byte, newSize)
+            }
+
+            // true parity strip
+            _, err = parityDriveFile.ReadAt(trueParityStrip, currentLocation)
+            check(err)
+
+            // compute the missing piece by XORing all of the other strips
+            for i := 0; i < len(otherDriveFiles); i++ {
+                file := otherDriveFiles[i]
+
+                _, err = file.ReadAt(buf, currentLocation)
+                check(err)
+
+                for j := 0; j < len(trueParityStrip); j++ {
+                    trueParityStrip[j] ^= buf[j]
+                }
+            }
+
+            // write missing piece into the fixed file
+            fixedFile.WriteAt(trueParityStrip, currentLocation)
+
+            // also write into the outputfile we were supposed to return
+            // make sure not to write the padding in here, though
+            if hadPadding && lastBuffer {
+                truePaddingSize := 0
+                for i := len(trueParityStrip) - 1; i >= len(trueParityStrip) - int(STRIP_COUNT); i-- {
+                    if trueParityStrip[i] == 0x80 {
+                        truePaddingSize = len(trueParityStrip) - i
+                        break
+                    }
+                }
+
+                fmt.Printf("True padding size in fix = %d\n", truePaddingSize)
+
+                // resize the size of the true raw data
+                trueParityStrip = append([]byte(nil), buf[:len(trueParityStrip) - truePaddingSize]...)
+
+                // update "size" of the file
+                size -= int64(truePaddingSize)
+            }
+            outputFile.WriteAt(trueParityStrip, size * int64(driveID) + currentLocation)
+
+            // update location
+            currentLocation += int64(len(trueParityStrip))
+        }
+
+        /*
+            File is fixed! Maybe should be fixing other files at the same time
+            as fixing this one, or could just be realizing that later when you try
+            to read one of those broken files (not immediately clear which
+            one is better because we are running fsck to fix anyway, and will
+            realize that the fix caused some of the file data to change)
+        */
+    } else {
+        /*
+            Read all of the other drive files, XOR them together, and write them
+            to the parity drive
+        */
+        otherDriveFiles := make([]*os.File, STRIP_COUNT)
+
+        for i := 0; i < int(STRIP_COUNT); i++ {
+            tmpName := fmt.Sprintf("storage/drive_%d/%s_%d", i + 1, rawFileName, i + 1)
+            otherDriveFiles[i], err = openFile(tmpName); check(err)
+        }
+
+        fileStat, err := otherDriveFiles[0].Stat(); check(err);
+        size := fileStat.Size(); // in bytes
+
+        filesParityStrip := make([]byte, MAX_BUFFER_SIZE)
+        buf := make([]byte, MAX_BUFFER_SIZE)
+
+        var currentLocation int64 = 0
+        for currentLocation != size {
+            // check if need to resize the buffers
+            if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
+                newSize := size - currentLocation
+
+                filesParityStrip = make([]byte, newSize)
+                buf = make([]byte, newSize)
+            }
+
+            // compute the missing piece by XORing all of the other strips
+            for i := 0; i < len(otherDriveFiles); i++ {
+                file := otherDriveFiles[i]
+
+                _, err = file.ReadAt(buf, currentLocation)
+                check(err)
+
+                for j := 0; j < len(filesParityStrip); j++ {
+                    filesParityStrip[j] ^= buf[j]
+                }
+            }
+
+            // write missing piece into the fixed file
+            fixedFile.WriteAt(filesParityStrip, currentLocation)
+
+            // update location
+            currentLocation += int64(len(filesParityStrip))
+        }
+
+        // File is fixed!
+    }
+
+    // TODO: print some useful success message here
+}
+
+/*
     Simple reader and writer, reads the target file, which is a component (filename) 
     of a larger original file, and writes it to the output file, at the
     given range specified (since the component is from a range of the original
@@ -454,53 +675,30 @@ func saveLocalhost(originalFile *os.File, filename string, stripLength int64, fi
     sourcePath = where the file was originally saved - maybe might need this later
 */
 func basicReaderWriter(filename string, outputFile *os.File, 
-                       ID int, hasPadding bool) {
+                       ID int, hasPadding bool, completionChannel chan int,
+                       canRecoverChannel chan int, storageType int) {
     // read from respective slice, and write it to the output file
     file, err := os.Open(filename); check(err)
     fileStat, err := file.Stat(); check(err);
-    size := fileStat.Size(); // in bytes
+    rawSize := fileStat.Size(); // in bytes
+    size := rawSize
+
+    // subtract the size of the hash at the end to get the true size
+    size -= int64(MD5_SIZE)
 
     offsetInOutput := int64(ID) * size
     var position int64 = 0
 
-    // calculate padding (if it exists) in this slice
-    if hasPadding {
-        sizeOfPadding := STRIP_COUNT
-        padding := make([]byte, sizeOfPadding)
-
-        // make sure this doesn't read too many bytes
-        paddingPosition := size - sizeOfPadding
-        if paddingPosition < 0 {
-            fmt.Printf("Got here")
-            paddingPosition = 0
-        }
-
-        fmt.Printf("File size is %d and padding position is %d\n", size, paddingPosition)
-        _, err = file.ReadAt(padding, paddingPosition)
-        check(err)
-
-        for i := 0; i < int(sizeOfPadding); i++ {
-            fmt.Printf("%x ", padding[i])
-        }
-        fmt.Printf("\n")
-
-        truePaddingSize := int64(0)
-        for i := sizeOfPadding - 1; i >= 0; i-- {
-            if padding[i] == 0x80 {
-                fmt.Printf("Got here!!")
-                truePaddingSize = sizeOfPadding - i
-            }
-        }
-
-        // subtract the padding from the calculated size
-        fmt.Printf("Padding size: %d\n", truePaddingSize)
-        size -= truePaddingSize
-    }
-    
+    currentHash := md5.New()
+    lastBuffer := false
     buf := make([]byte, MAX_BUFFER_SIZE)
     for position != size {
-        if (size - position) < int64(MAX_BUFFER_SIZE) {
+
+        if (size - position) <= int64(MAX_BUFFER_SIZE) { // will enter conditional at last bit of file
             buf = make([]byte, size - position)
+
+            // Should calculate padding on this buffer
+            lastBuffer = true
         }
 
         // request read at specific location
@@ -508,6 +706,31 @@ func basicReaderWriter(filename string, outputFile *os.File,
         // reads so that this thread could keep running
         _, err = file.ReadAt(buf, position)
         check(err)
+
+        /*
+            Calculate the padding on this, but update hash before fixing buffer,
+            since the hash includes the padding in it
+        */
+        currentHash.Write(buf)
+        // calculate padding (if it exists) in this slice
+        if hasPadding && lastBuffer {
+            truePaddingSize := 0
+            for i := len(buf) - 1; i >= len(buf) - int(STRIP_COUNT); i-- {
+                if buf[i] == 0x80 {
+                    truePaddingSize = len(buf) - i
+                    break
+                }
+            }
+
+            fmt.Printf("True padding size = %d\n", truePaddingSize)
+
+            // resize the size of the true raw data
+            buf = append([]byte(nil), buf[:len(buf) - truePaddingSize]...)
+
+            // update "size" of the file
+            size -= int64(truePaddingSize)
+        }
+
 
         // write into the outputfile at the specific offset that this writer
         // is responsible for
@@ -517,10 +740,111 @@ func basicReaderWriter(filename string, outputFile *os.File,
         length := int64(len(buf))
         position += length
         offsetInOutput += length
+
+        // update hash
+        // currentHash.Write(buf)
     }
 
+    /*
+        Check if the computed hash on this component is correct, otherwise need
+        to handle appropriately (mark this disk as a bad disk and/or just rewrite
+        this component again, and then calculate the true value of this component
+        by using the parity drive to recover)
+    */
+
+    finalHash := currentHash.Sum(nil)
+    originalHash := make([]byte, MD5_SIZE)
+    _, err = file.ReadAt(originalHash, rawSize - MD5_SIZE)
+    check(err)
+
+    var hashesMatch bool = true
+    if len(originalHash) != MD5_SIZE {
+        fmt.Printf("Original hash not correct length\n")
+        hashesMatch = false
+    }
+    for i := 0; i < MD5_SIZE; i++ {
+        if (finalHash[i] != originalHash[i]) {
+            hashesMatch = false
+        }
+    }
+
+    if !hashesMatch {
+        completionChannel <- ID + 1
+        <- canRecoverChannel // wait until master says that this drive can recover
+        fmt.Printf("This drive is messed up, ID = %d\n", ID)
+        recoverFromDriveFailure(ID, file, filename, outputFile, storageType, 
+                                false, hasPadding)
+
+        fmt.Printf("Successfully fixed drive ID = %d\n", ID)
+    }
+
+    file.Close()
+
+    completionChannel <- 0 // success
     fmt.Println("RW exiting")
 }
+
+func basicParityChecker(filename string, parityCompletionChannel chan int, 
+                        canRecoverChannel chan int, storageType int) {
+    parityFile, err := os.Open(filename); check(err)
+
+    fileStat, err := parityFile.Stat()
+    rawSize := fileStat.Size()
+    size := rawSize
+    size -= MD5_SIZE
+
+    buf := make([]byte, MAX_BUFFER_SIZE)
+    currentHash := md5.New()
+
+    var currentLocation int64 = 0
+    for currentLocation != size {
+        if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
+            fmt.Printf("Current location: %d, size: %d\n", currentLocation, size)
+            buf = make([]byte, size - currentLocation)
+        }
+
+        _, err = parityFile.ReadAt(buf, currentLocation)
+        check(err)
+
+        currentHash.Write(buf)
+
+        currentLocation += int64(len(buf))
+    }
+
+    finalHash := currentHash.Sum(nil)
+    fmt.Printf("Final hash parity: %x, length = %d\n", finalHash, len(finalHash))
+    originalHash := make([]byte, MD5_SIZE)
+    _, err = parityFile.ReadAt(originalHash, rawSize - MD5_SIZE)
+    check(err)
+    fmt.Printf("Original hash parity: %x, length = %d\n", originalHash, len(originalHash))
+
+    var hashesMatch bool = true
+    if len(originalHash) != MD5_SIZE {
+        fmt.Printf("Original hash not correct length\n")
+        hashesMatch = false
+    }
+    for i := 0; i < MD5_SIZE; i++ {
+        if (finalHash[i] != originalHash[i]) {
+            hashesMatch = false
+        }
+    }
+
+    if !hashesMatch {
+        parityCompletionChannel <- 1
+        <- canRecoverChannel // wait until master says that this drive can recover
+        fmt.Printf("This drive is messed up, ID = parity\n")
+        recoverFromDriveFailure(0, parityFile, filename, nil, storageType, 
+                                true, false)
+
+        fmt.Printf("Successfully fixed drive ID = parity\n")
+    }
+
+    parityFile.Close()
+
+    parityCompletionChannel <- 0 // success
+    fmt.Println("Parity checker exiting.")
+}
+
 /*
     Retrieve a file that was saved to the system
 
@@ -557,14 +881,86 @@ func getFileLocalhost(pathToFile string) { // location string
     fmt.Printf("Creating file: %s\n", s)
     outputFile, err := os.Create(filename); check(err)
 
+    /*
+        Check if any of the drives is down - recover appropriately if this is
+        the case.
+
+        For now, can just append the 256 byte hash of the file to the end of the
+        file and compare it each time I read the component (instead of having
+        to compute the XOR every single time, which might not be necessary
+        if not reading the whole file -> this might never happen for this
+        application though) -> XOR would just tell me something is wrong, still
+        don't know where something went wrong, so need to do the hash approach
+
+        the file will be corrupted if the sector went bad, so the hash will solve
+        this, just need to make sure to run fsck or something on the offending
+        drive
+
+        hash might be really slow though, maybe should hash in parts
+
+        since go hashing is not optimized, can just hash my buffer, keep a temporary
+        hashing variable = to that, then move onto the next buffer, hash it, and then
+        save the hash of those two together as the new value of the temporary variable,
+        and continuously do this until you finish the whole file (do this same
+        calculation whenever reading a segment of a file, error out if there is
+        some issue in the final comparison)
+
+    */
+
+    completionChannel := make(chan int, STRIP_COUNT)
+    canRecoverChannel := make(chan int, STRIP_COUNT)
+    parityCompletionChannel := make(chan int, 1)
+
     for i := 0; i < int(STRIP_COUNT); i++ {
         sliceFilename := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, pathToFile, i + 1)
         hasPadding := (i == int(STRIP_COUNT) - 1)
-        go basicReaderWriter(sliceFilename, outputFile, i, hasPadding)
+        go basicReaderWriter(sliceFilename, outputFile, i, hasPadding, 
+                            completionChannel, canRecoverChannel, LOCALHOST)
+    }
+
+    // also create a basic reader to check the correctness of the redundant
+    // bits stored on the parity disk
+    parityFilename := fmt.Sprintf("storage/drivep/%s_p", pathToFile)
+    go basicParityChecker(parityFilename, parityCompletionChannel, 
+                        canRecoverChannel, LOCALHOST)
+
+    // wait for all of the writers to be done
+    numberOfErrors := 0
+    // brokenDrive := -1
+    for i := int64(0); i < STRIP_COUNT; i++ {
+        errorCode := <- completionChannel // may want to get error codes here
+        if errorCode != 0 { // some drive had an issue
+            numberOfErrors++
+            // brokenDrive = errorCode
+        }
+
+        // got all of the other drives
+        if i == STRIP_COUNT - int64(numberOfErrors) {
+            // can let the drive(s) with errors know that they can use the
+            // other drives' files
+            // Note: for now, assuming only one drive will go down at a time
+
+            canRecoverChannel <- 0
+            // should wait for recovery to finish, will return a 0 after it
+            // returns
+            errorCode = <- completionChannel
+        }
+    }
+
+    // ensure parity checker finishes
+    errorCode := <- parityCompletionChannel
+    if errorCode != 0 {
+        canRecoverChannel <- 0
+        errorCode = <- parityCompletionChannel
     }
 
     // remove after sent
     // os.Remove(filename)
+    outputFile.Close()
+
+    close(completionChannel)
+    close(parityCompletionChannel)
+    close(canRecoverChannel)
 }
 
 /*
