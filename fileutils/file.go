@@ -646,12 +646,13 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         otherDriveFiles := make([]*os.File, STRIP_COUNT)
 
         for i := 0; i < int(STRIP_COUNT); i++ {
-            tmpName := fmt.Sprintf("storage/drive_%d/%s_%d", i + 1, rawFileName, i + 1)
-            otherDriveFiles[i], err = openFile(tmpName); check(err)
+            tmpName := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, rawFileName, i + 1)
+            otherDriveFiles[i], err = os.Open(tmpName); check(err)
         }
 
         fileStat, err := otherDriveFiles[0].Stat(); check(err);
         size := fileStat.Size(); // in bytes
+        size -= MD5_SIZE // chop off the hash
 
         filesParityStrip := make([]byte, MAX_BUFFER_SIZE)
         buf := make([]byte, MAX_BUFFER_SIZE)
