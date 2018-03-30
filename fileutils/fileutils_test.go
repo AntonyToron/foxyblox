@@ -14,13 +14,19 @@ import (
     "math"
     "os"
     "fmt"
+    "bytes"
+    "os/exec"
+    "time"
 )
 
 const SMALL_FILE_SIZE int = 1024
+const REGULAR_FILE_SIZE int = 8192
 
+// 24
 var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(24))) //int64(math.Pow(2, float64(30))) // 1 GB
 
 func TestSavingCorrectnessSmallFile(t *testing.T) {
+    rand.Seed(time.Now().UTC().UnixNano()) // necessary to seed differently almost every time
     os.Chdir("../") // go back to home directory
 
     // create sample file with random binary data
@@ -109,7 +115,12 @@ func TestSavingCorrectnessLargeFile(t *testing.T) {
     }
 
     // call saveFile
+    startTime := time.Now()
+
     SaveFile(testingFilename, LOCALHOST)
+
+    elapsed := time.Since(startTime)
+    fmt.Printf("Save file took %s\n", elapsed)
 
     // check if the XOR of the components is correct
     currentXOR := make([]byte, LARGE_FILE_SIZE) // / 3
@@ -160,3 +171,253 @@ func TestSavingCorrectnessLargeFile(t *testing.T) {
     os.Remove(testingFilename)
 
 }
+
+func TestGettingFile(t *testing.T) {
+    // create sample file with random binary data
+    testingFilename := "testingFileRegular.txt"
+    testingFile, err := os.Create(testingFilename) // overwrite existing file if there
+    if err != nil {
+        t.Errorf("Could not create %d\n", testingFilename)
+    }
+
+    for i := int64(0); i < (LARGE_FILE_SIZE / int64(REGULAR_FILE_SIZE)); i++ {
+        smallData := make([]byte, REGULAR_FILE_SIZE)
+        rand.Read(smallData)
+
+        _, err = testingFile.WriteAt(smallData, i * int64(REGULAR_FILE_SIZE))
+        if err != nil {
+            t.Errorf("Could not write to %d\n", testingFilename)
+        }
+    }
+
+    // call saveFile
+    SaveFile(testingFilename, LOCALHOST)
+
+    GetFile(testingFilename, LOCALHOST)
+
+    cmd := exec.Command("diff", testingFilename, "downloaded-" + testingFilename)
+
+    var out bytes.Buffer
+    cmd.Stdout = &out
+    err = cmd.Run()
+    check(err)
+
+    fmt.Printf("Diff stdout: %q\n", out.String())
+
+    if out.String() != "" {
+        t.Errorf("Diff output was not empty")
+    }
+
+    testingFilename = fmt.Sprintf("./%s", testingFilename)
+    os.Remove(testingFilename)
+    testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
+    os.Remove(testingFilename)
+}
+
+func TestSimulatedDataDiskCorruption(t *testing.T) {
+    fmt.Printf("\n\n\n SIMULATING DISK CORRUPTION \n\n\n")
+
+    // create sample file with random binary data
+    testingFilename := "testingFile.txt"
+    testingFile, err := os.Create(testingFilename) // overwrite existing file if there
+    if err != nil {
+        t.Errorf("Could not create %d\n", testingFilename)
+    }
+
+    smallFileData := make([]byte, SMALL_FILE_SIZE)
+    rand.Read(smallFileData)
+
+    _, err = testingFile.WriteAt(smallFileData, 0)
+
+    // call saveFile
+    SaveFile(testingFilename, LOCALHOST)
+
+    // insert some faulty bits into the file
+    file, err := os.OpenFile("./storage/drive1/" + testingFilename + "_1",
+                            os.O_RDWR, 0755)
+    check(err)
+
+    buf := make([]byte, 50)
+    rand.Read(buf)
+    for i:= 0; i < len(buf); i++ {
+        fmt.Printf("%x ", buf[i])
+    }
+    fmt.Printf("\n")
+    _, err = file.WriteAt(buf, 5) //int64(SMALL_FILE_SIZE - 50)
+    check(err)
+
+    fmt.Printf("Wrote some faulty bits\n")
+
+    file.Close()
+
+    GetFile(testingFilename, LOCALHOST)
+
+    // diff should still be fine, because recovered
+
+    cmd := exec.Command("diff", testingFilename, "downloaded-" + testingFilename)
+
+    var out bytes.Buffer
+    var stderr bytes.Buffer
+    cmd.Stdout = &out
+    cmd.Stderr = &stderr
+    err = cmd.Run()
+    fmt.Printf("About to run command\n")
+    // check(err)
+    fmt.Printf("Ran command\n")
+    if err != nil {
+        fmt.Printf("Diff stderr: %q\n", stderr.String())
+        t.Errorf("Diff stderr not empty")
+    }
+
+    fmt.Printf("Diff stdout: %q\n", out.String())
+
+    if out.String() != "" {
+        t.Errorf("Diff output was not empty")
+    }
+
+    testingFilename = fmt.Sprintf("./%s", testingFilename)
+    os.Remove(testingFilename)
+    testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
+    os.Remove(testingFilename)
+}
+
+func TestSimulatedDataDiskCorruptionLarge(t *testing.T) {
+    fmt.Printf("\n\n\n SIMULATING LARGE FILE DISK CORRUPTION \n\n\n")
+
+    // create sample file with random binary data
+    testingFilename := "testingFileLarge.txt"
+    testingFile, err := os.Create(testingFilename) // overwrite existing file if there
+    if err != nil {
+        t.Errorf("Could not create %d\n", testingFilename)
+    }
+
+    smallFileData := make([]byte, LARGE_FILE_SIZE)
+    rand.Read(smallFileData)
+
+    _, err = testingFile.WriteAt(smallFileData, 0)
+
+    // call saveFile
+    SaveFile(testingFilename, LOCALHOST)
+
+    // insert some faulty bits into the file
+    file, err := os.OpenFile("./storage/drive1/" + testingFilename + "_1",
+                            os.O_RDWR, 0755)
+    check(err)
+
+    buf := make([]byte, 50)
+    rand.Read(buf)
+    for i:= 0; i < len(buf); i++ {
+        fmt.Printf("%x ", buf[i])
+    }
+    fmt.Printf("\n")
+    _, err = file.WriteAt(buf, 5) //int64(SMALL_FILE_SIZE - 50)
+    check(err)
+
+    fmt.Printf("Wrote some faulty bits\n")
+
+    file.Close()
+
+    GetFile(testingFilename, LOCALHOST)
+
+    // diff should still be fine, because recovered
+
+    cmd := exec.Command("diff", testingFilename, "downloaded-" + testingFilename)
+
+    var out bytes.Buffer
+    var stderr bytes.Buffer
+    cmd.Stdout = &out
+    cmd.Stderr = &stderr
+    err = cmd.Run()
+    fmt.Printf("About to run command\n")
+    // check(err)
+    fmt.Printf("Ran command\n")
+    if err != nil {
+        fmt.Printf("Diff stderr: %q\n", stderr.String())
+        t.Errorf("Diff stderr not empty")
+    }
+
+    fmt.Printf("Diff stdout: %q\n", out.String())
+
+    if out.String() != "" {
+        t.Errorf("Diff output was not empty")
+    }
+
+    testingFilename = fmt.Sprintf("./%s", testingFilename)
+    os.Remove(testingFilename)
+    testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
+    os.Remove(testingFilename)
+}
+
+func TestSimulatedDataDiskCorruptionLargeAndPadding(t *testing.T) {
+    fmt.Printf("\n\n\n SIMULATING LARGE FILE DISK CORRUPTION \n\n\n")
+
+    // create sample file with random binary data
+    testingFilename := "testingFileLarge.txt"
+    testingFile, err := os.Create(testingFilename) // overwrite existing file if there
+    if err != nil {
+        t.Errorf("Could not create %d\n", testingFilename)
+    }
+
+    smallFileData := make([]byte, LARGE_FILE_SIZE)
+    rand.Read(smallFileData)
+
+    _, err = testingFile.WriteAt(smallFileData, 0)
+
+    // call saveFile
+    SaveFile(testingFilename, LOCALHOST)
+
+    // insert some faulty bits into the file
+    file, err := os.OpenFile("./storage/drive3/" + testingFilename + "_3",
+                            os.O_RDWR, 0755)
+    check(err)
+
+    buf := make([]byte, 50)
+    rand.Read(buf)
+    for i:= 0; i < len(buf); i++ {
+        fmt.Printf("%x ", buf[i])
+    }
+    fmt.Printf("\n")
+    _, err = file.WriteAt(buf, 5) //int64(SMALL_FILE_SIZE - 50)
+    check(err)
+
+    fmt.Printf("Wrote some faulty bits\n")
+
+    file.Close()
+
+    GetFile(testingFilename, LOCALHOST)
+
+    // diff should still be fine, because recovered
+
+    cmd := exec.Command("diff", testingFilename, "downloaded-" + testingFilename)
+
+    var out bytes.Buffer
+    var stderr bytes.Buffer
+    cmd.Stdout = &out
+    cmd.Stderr = &stderr
+    err = cmd.Run()
+    fmt.Printf("About to run command\n")
+    // check(err)
+    fmt.Printf("Ran command\n")
+    if err != nil {
+        fmt.Printf("Diff stderr: %q\n", stderr.String())
+        t.Errorf("Diff stderr not empty")
+    }
+
+    fmt.Printf("Diff stdout: %q\n", out.String())
+
+    if out.String() != "" {
+        t.Errorf("Diff output was not empty")
+    }
+
+    testingFilename = fmt.Sprintf("./%s", testingFilename)
+    os.Remove(testingFilename)
+    testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
+    os.Remove(testingFilename)
+}
+
+func TestSimulatedParityDiskCorruption(t *testing.T) {
+
+}
+
+
+// benchmarking test, modifying buffer size each time

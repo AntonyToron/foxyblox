@@ -24,7 +24,7 @@ import (
     // "time"
 )
 
-const MAX_BUFFER_SIZE int = 1024; //1024
+const MAX_BUFFER_SIZE int = 8192*8; //1024, empirically 8192*8 seems pretty good, more testing needed for this
 const STRIP_COUNT int64 = 3;
 const MD5_SIZE = md5.Size;
 
@@ -67,9 +67,10 @@ func check(err error) {
 
 func openFile(path string) (*os.File, error) {
     if _, err := os.Stat(path); os.IsNotExist(err) {
-        file, err := os.Create(path)
+        file, err := os.Create(path) // maybe os.OpenFile is better here, can specify mode of opening
         return file, err
     } else {
+        os.Remove(path)
         file, err := os.Create(path)
         return file, err
     }
@@ -515,12 +516,15 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
     oName := offendingFile.Name()
     offendingFile.Close()
     os.Remove(offendingFileLocation)
-
+    fmt.Printf("Offending file location %s\n", offendingFileLocation)
     fixedFile, err := openFile(offendingFileLocation); check(err)
 
     rawFileName := oName
     lastIndex := strings.LastIndex(rawFileName, "_")
-    rawFileName = rawFileName[:lastIndex] // cut off the _driveID part    
+    rawFileName = rawFileName[:lastIndex] // cut off the _driveID part
+    x := strings.Split(rawFileName, "/")
+    rawFileName = x[len(x) - 1] // get the last part of the path, if name = path
+    fmt.Printf("Raw file name: %s\n", rawFileName)  
 
     if !isParityDisk {
         // read all of the other disks besides this one, and XOR with the parity
@@ -533,26 +537,32 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         otherDriveFiles := make([]*os.File, STRIP_COUNT - 1)
 
         parityDriveFileName := fmt.Sprintf("storage/drivep/%s_p", rawFileName)
-        parityDriveFile, err := openFile(parityDriveFileName)
+        parityDriveFile, err := os.Open(parityDriveFileName)
+        check(err)
         
         count := 0
         for i := 0; i < int(STRIP_COUNT); i++ {
             if i != driveID {
-                tmpName := fmt.Sprintf("storage/drive_%d/%s_%d", i + 1, rawFileName, i + 1)
-                otherDriveFiles[count], err = openFile(tmpName); check(err)
+                tmpName := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, rawFileName, i + 1)
+                fmt.Printf("Tmp name: %s\n", tmpName)
+                otherDriveFiles[count], err = os.Open(tmpName); check(err)
 
                 count++
             }
         }
 
         fileStat, err := parityDriveFile.Stat(); check(err);
-        size := fileStat.Size(); // in bytes
+        rawSize := fileStat.Size(); // in bytes
+        rawSize -= MD5_SIZE
+        size := rawSize // subtract size for hash at end
 
         trueParityStrip := make([]byte, MAX_BUFFER_SIZE)
         buf := make([]byte, MAX_BUFFER_SIZE)
 
         var currentLocation int64 = 0
         lastBuffer := false
+        currentHash := md5.New()
+
         for currentLocation != size {
             // check if need to resize the buffers
             if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
@@ -561,6 +571,8 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
 
                 trueParityStrip = make([]byte, newSize)
                 buf = make([]byte, newSize)
+            } else {
+                trueParityStrip = make([]byte, MAX_BUFFER_SIZE)
             }
 
             // true parity strip
@@ -582,6 +594,9 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
             // write missing piece into the fixed file
             fixedFile.WriteAt(trueParityStrip, currentLocation)
 
+            // update fixed hash
+            currentHash.Write(trueParityStrip)
+
             // also write into the outputfile we were supposed to return
             // make sure not to write the padding in here, though
             if hadPadding && lastBuffer {
@@ -594,18 +609,27 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
                 }
 
                 fmt.Printf("True padding size in fix = %d\n", truePaddingSize)
+                fmt.Printf("length before trim: %d\n", len(trueParityStrip))
 
                 // resize the size of the true raw data
-                trueParityStrip = append([]byte(nil), buf[:len(trueParityStrip) - truePaddingSize]...)
+                trueParityStrip = append([]byte(nil), trueParityStrip[:len(trueParityStrip) - truePaddingSize]...)
+
+                fmt.Printf("length after trim: %d\n", len(trueParityStrip))
 
                 // update "size" of the file
                 size -= int64(truePaddingSize)
             }
-            outputFile.WriteAt(trueParityStrip, size * int64(driveID) + currentLocation)
+
+            outputFile.WriteAt(trueParityStrip, rawSize * int64(driveID) + currentLocation)
 
             // update location
             currentLocation += int64(len(trueParityStrip))
         }
+
+        fixedHash := currentHash.Sum(nil)
+        fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
+        _, err = fixedFile.WriteAt(fixedHash, currentLocation)
+        check(err)
 
         /*
             File is fixed! Maybe should be fixing other files at the same time
@@ -633,6 +657,7 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         buf := make([]byte, MAX_BUFFER_SIZE)
 
         var currentLocation int64 = 0
+        currentHash := md5.New()
         for currentLocation != size {
             // check if need to resize the buffers
             if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
@@ -640,6 +665,8 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
 
                 filesParityStrip = make([]byte, newSize)
                 buf = make([]byte, newSize)
+            } else {
+                filesParityStrip = make([]byte, MAX_BUFFER_SIZE)
             }
 
             // compute the missing piece by XORing all of the other strips
@@ -657,9 +684,17 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
             // write missing piece into the fixed file
             fixedFile.WriteAt(filesParityStrip, currentLocation)
 
+            // update fixed hash
+            currentHash.Write(filesParityStrip)
+
             // update location
             currentLocation += int64(len(filesParityStrip))
         }
+
+        fixedHash := currentHash.Sum(nil)
+        fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
+        _, err = fixedFile.WriteAt(fixedHash, currentLocation)
+        check(err)
 
         // File is fixed!
     }
@@ -753,9 +788,11 @@ func basicReaderWriter(filename string, outputFile *os.File,
     */
 
     finalHash := currentHash.Sum(nil)
+    fmt.Printf("Final hash ID %d: %x, length = %d\n", ID, finalHash, len(finalHash))
     originalHash := make([]byte, MD5_SIZE)
     _, err = file.ReadAt(originalHash, rawSize - MD5_SIZE)
     check(err)
+    fmt.Printf("Original hash ID %d: %x, length = %d\n", ID, originalHash, len(originalHash))
 
     var hashesMatch bool = true
     if len(originalHash) != MD5_SIZE {
@@ -947,12 +984,16 @@ func getFileLocalhost(pathToFile string) { // location string
         }
     }
 
+    fmt.Printf("All of the writers finished\n")
+
     // ensure parity checker finishes
     errorCode := <- parityCompletionChannel
     if errorCode != 0 {
         canRecoverChannel <- 0
         errorCode = <- parityCompletionChannel
     }
+
+    fmt.Printf("Parity writer finished\n")
 
     // remove after sent
     // os.Remove(filename)
@@ -961,6 +1002,8 @@ func getFileLocalhost(pathToFile string) { // location string
     close(completionChannel)
     close(parityCompletionChannel)
     close(canRecoverChannel)
+
+    fmt.Printf("Closed channels\n")
 }
 
 /*
