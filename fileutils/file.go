@@ -1020,3 +1020,34 @@ func GetFile(pathToFile string, storageType int) {
             fmt.Println("Not implemented")
     }
 }
+
+
+func removeFileLocalhost(filename string) {
+    for i := 0; i < int(STRIP_COUNT); i++ {
+        sliceFilename := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, filename, i + 1)
+        
+        // remove it, if it exists (which it should)
+        if _, err := os.Stat(sliceFilename); !(os.IsNotExist(err)) { // file exists
+            os.Remove(sliceFilename)
+        }
+    }
+
+    parityFilename := fmt.Sprintf("storage/drivep/%s_p", filename)
+    // remove it, if it exists (which it should)
+    if _, err := os.Stat(parityFilename); !(os.IsNotExist(err)) { // file exists
+        os.Remove(parityFilename)
+    }
+
+    fmt.Printf("Removed file %s\n", filename)
+}
+
+func RemoveFile(pathToFile string, storageType int) {
+    switch storageType {
+        case LOCALHOST:
+            removeFileLocalhost(pathToFile)
+        case EBS:
+            fmt.Println("Not implemented")
+        default:
+            fmt.Println("Not implemented")
+    }
+}

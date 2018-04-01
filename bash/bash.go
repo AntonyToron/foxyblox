@@ -95,6 +95,18 @@ func Run() {
             fileutils.GetFile(filename, LOCALHOST)
 
             fmt.Println("Retreived file.")
+        } else if (strings.Compare(command, "remove") == 0) {
+            filename, position := nextToken(line)
+            line = line[position:]
+
+            if (strings.Compare(filename, "") == 0) {
+                fmt.Println("usage: remove [filename]");
+                break;
+            }
+
+            fileutils.RemoveFile(filename, LOCALHOST)
+
+            fmt.Println("Removed file.")
         } else { // quit
             break;
         }
