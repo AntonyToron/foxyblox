@@ -107,6 +107,8 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
 
     testingFilename = fmt.Sprintf("./%s", testingFilename)
     os.Remove(testingFilename)
+    // remove the file
+    RemoveFile(testingFilename, LOCALHOST)
 }
 
 func TestSavingCorrectnessVerySmallFile(t *testing.T) {
@@ -183,6 +185,8 @@ func TestGettingFile(t *testing.T) {
     os.Remove(testingFilename)
     testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
     os.Remove(testingFilename)
+    // remove the file
+    RemoveFile(testingFilename, LOCALHOST)
 }
 
 func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename string, fileToCorrupt string) {
@@ -255,6 +259,8 @@ func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename s
     os.Remove(testingFilename)
     testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
     os.Remove(testingFilename)
+    // remove the file
+    RemoveFile(testingFilename, LOCALHOST)
 }
 
 func TestSimulatedDataDiskCorruption(t *testing.T) {
@@ -366,6 +372,8 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
 
     testingFilename = fmt.Sprintf("./%s", testingFilename)
     os.Remove(testingFilename)
+    // remove the file
+    RemoveFile(testingFilename, LOCALHOST)
 }
 
 func TestRemoveFile(t *testing.T) {

@@ -21,6 +21,7 @@ import (
     "os/exec"
     "bytes"
     "strings"
+    "foxyblox/database"
     // "time"
 )
 
@@ -1050,4 +1051,6 @@ func RemoveFile(pathToFile string, storageType int) {
         default:
             fmt.Println("Not implemented")
     }
+
+    // database.DeleteFileEntry(storageType, pathToFile, )
 }
