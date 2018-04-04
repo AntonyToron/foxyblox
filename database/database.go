@@ -85,7 +85,7 @@ func pathExists(path string) (bool) {
     return !os.IsNotExist(err)
 }
 
-func initializeDatabaseStructure(storageType int, diskLocations []string) (bool) {
+func InitializeDatabaseStructure(storageType int, diskLocations []string) (bool) {
     if storageType == LOCALHOST {
         /*
             Create the following structure if it doesn't already exist:
@@ -143,7 +143,7 @@ func initializeDatabaseStructure(storageType int, diskLocations []string) (bool)
 /*
     Recursively remove all files (including stored data and database files)
 */
-func removeDatabaseStructure(storageType int, diskLocations []string) {
+func RemoveDatabaseStructure(storageType int, diskLocations []string) {
     if storageType == LOCALHOST {
 
         if pathExists("./storage") {
@@ -169,7 +169,7 @@ func removeDatabaseStructure(storageType int, diskLocations []string) {
 /*
     Removes all database files relating to this user
 */
-func deleteDatabaseForUser(storageType int, dbdiskLocations []string,
+func DeleteDatabaseForUser(storageType int, dbdiskLocations []string,
                             username string) {
     if storageType == LOCALHOST {
         for i := 0; i < DISK_COUNT; i++ {
@@ -191,9 +191,10 @@ func deleteDatabaseForUser(storageType int, dbdiskLocations []string,
 // should check to see if user already has a database before calling this
 // dbdisklocations should be ordered with the IDs of the disks increasing,
 // with parity disk(s) at the end
-func createDatabaseForUser(storageType int, dbdiskLocations []string,
+func CreateDatabaseForUser(storageType int, dbdiskLocations []string,
                            username string) {
     if storageType == LOCALHOST {
+        parityBuf := make([]byte, HEADER_SIZE)
         for i := 0; i < DISK_COUNT; i++ { //- NUM_PARITY_DISKS
             // dbCompLocation := fmt.Sprintf("%s/%s_%d", dbdisklocations[i], username, i)
             dbCompLocation := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
@@ -254,6 +255,10 @@ func createDatabaseForUser(storageType int, dbdiskLocations []string,
             _, err = dbFile.WriteAt(header, 0)
             check(err)
 
+            for j := 0; j < len(parityBuf); j++ {
+                parityBuf[j] ^= header[j]
+            }
+
             dbFile.Close()
         }
 
@@ -264,30 +269,16 @@ func createDatabaseForUser(storageType int, dbdiskLocations []string,
         dbParityFileName := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
         dbParityFile, err := os.Create(dbParityFileName); check(err)
 
-        parityBuf := make([]byte, HEADER_SIZE)
-        for i := 0; i < DISK_COUNT; i++ {
-            dbCompLocation := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
-
-            dbFile, err := os.Create(dbCompLocation)
-            check(err)
-
-            buf := make([]byte, HEADER_SIZE)
-
-            _, err = dbFile.ReadAt(buf, 0)
-            check(err)
-            for j := 0; j < len(buf); j++ {
-                parityBuf[j] ^= buf[j]
-            }
-        }
-
         dbParityFile.WriteAt(parityBuf, 0)
+
+        dbParityFile.Close()
     }
 }
 
 func resizeAllDbDisks(storageType int, dbdisklocations []string, username string) {
     if storageType == LOCALHOST {
         for i := 0; i < DISK_COUNT; i++ {
-            dbFilename := fmt.Sprintf("./storage/drive%d/%s_%d", i, username, i)
+            dbFilename := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
             
             dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
             check(err)
@@ -304,11 +295,13 @@ func resizeAllDbDisks(storageType int, dbdisklocations []string, username string
                 dbFile.WriteAt(buf, sizeOfDbFile + numWritten)
                 numWritten += bufSize
             }
+
+            dbFile.Close()
         }
 
         // add onto the parity file as well (just append 0s accordingly, b/c
         // exclusive OR of 0s is 0)
-        dbFilename := fmt.Sprintf("./storage/drivep/%s_p", username)
+        dbFilename := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
             
         dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
         check(err)
@@ -325,6 +318,10 @@ func resizeAllDbDisks(storageType int, dbdisklocations []string, username string
             dbFile.WriteAt(buf, sizeOfDbFile + numWritten)
             numWritten += bufSize
         }
+
+        dbFile.Close()
+
+        fmt.Printf("Resized all of the disks\n")
     }
 }
 
@@ -341,7 +338,7 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
             //     dl := fmt.Sprintf("./storage/dbdrive%d", i)
             //     dbdisklocations[i] = dl
             // }
-            createDatabaseForUser(storageType, nil, username)
+            CreateDatabaseForUser(storageType, nil, username)
         }
 
         /*
@@ -363,11 +360,11 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
 
         dbFilename := ""
         if filename[0] >= 0 && filename[0] <= 85 {
-            dbFilename = fmt.Sprintf("./storage/drive1/%s_1", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
         } else if filename[0] >= 86 && filename[0] <= 112 {
-            dbFilename = fmt.Sprintf("./storage/drive2/%s_2", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
         } else {
-            dbFilename = fmt.Sprintf("./storage/drive3/%s_3", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
         }
 
         // read in the database file and get root of the tree
@@ -421,14 +418,14 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         entryBuf := make([]byte, SIZE_OF_ENTRY)
         for !foundInsertionPoint {
             // read in the current node
-            dbFile.ReadAt(buf, currentNodeLocation)
+            dbFile.ReadAt(entryBuf, currentNodeLocation)
 
-            currentNode := TreeEntry{string(buf[0:header.FileNameSize]), 
+            currentNode := TreeEntry{string(entryBuf[0:header.FileNameSize]), 
                                      0, 0, []string(nil)}
 
-            b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
+            b := bytes.NewReader(entryBuf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
             err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
-            b = bytes.NewReader(buf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
+            b = bytes.NewReader(entryBuf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
             err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
 
             // go left if < (if equals, doesn't make sense to keep going)
@@ -464,8 +461,11 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
 
         // resize the files if this insertion will increase the size of this
         // database file
-        if (header.TrueDbSize + int64(SIZE_OF_ENTRY)) > sizeOfDbFile {
+        for (header.TrueDbSize + int64(SIZE_OF_ENTRY)) > sizeOfDbFile {
             resizeAllDbDisks(storageType, nil, username)
+
+            fileStat, err := dbFile.Stat(); check(err);
+            sizeOfDbFile = fileStat.Size(); // in bytes
         }
 
         // update true db size if will append to end of file
@@ -484,10 +484,15 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         _, err = dbFile.WriteAt(binaryBuffer.Bytes(), currentNodeLocation + int64(offsetToPointer))
         check(err)
 
+        // update the true size of the database (we are going to enter a new entry)
+        header.TrueDbSize += int64(SIZE_OF_ENTRY)
+
         // update free list to point to next entry in it
         // pointer to next in free list = first 8 bytes in the
         // entry in free list, if all 0s, then end of free list
         insertionPointBuf := make([]byte, POINTER_SIZE)
+        fileStat, err = dbFile.Stat(); check(err);
+        sizeOfDbFile = fileStat.Size(); // in bytes
         _, err = dbFile.ReadAt(insertionPointBuf, header.FreeList)
         check(err)
         var pointer int64 = 0
@@ -506,16 +511,15 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         _, err = dbFile.WriteAt(targetNode, insertionPoint)
         check(err)
 
-        // update the true size of the database (we entered a new entry)
-        header.TrueDbSize += int64(SIZE_OF_ENTRY)
-
         // push any updates to header
         binaryBuffer = new(bytes.Buffer)
         err = binary.Write(binaryBuffer, binary.LittleEndian, &header)
         check(err)
 
-        _, err = dbFile.WriteAt(binaryBuffer.Bytes(), 0) // overwrite current header
+        newHeaderBuf := binaryBuffer.Bytes()
+        _, err = dbFile.WriteAt(newHeaderBuf, 0) // overwrite current header
         check(err)
+        fmt.Printf("Size of binary buffer: %d\n", len(newHeaderBuf))
 
         // update the parity file to reflect the changes to both the header and
         // the entry
@@ -525,11 +529,11 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         // the header (since added to true size of db), and also the part of the
         // free list that we modified
 
-        dbParityFilename := fmt.Sprintf("./storage/drivep/%s_p", username)
+        dbParityFilename := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
         dbParityFile, err := os.OpenFile(dbParityFilename, os.O_RDWR, REGULAR_FILE_MODE)
         check(err)
 
-        parityBuf := make([]byte, int(HEADER_DISK_SIZE))
+        parityBuf := make([]byte, len(newHeaderBuf)) // not header_size, since didn't modify the zero bit parts
 
         // fix the header part
         _, err = dbParityFile.ReadAt(parityBuf, 0)
@@ -538,7 +542,6 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         err = binary.Write(x, binary.LittleEndian, &oldHeader)
         check(err)
         oldHeaderBuf := x.Bytes()
-        newHeaderBuf := binaryBuffer.Bytes()
         for i := 0; i < len(parityBuf); i++ {
             parityBuf[i] ^= oldHeaderBuf[i] // XOR with old data
             parityBuf[i] ^= newHeaderBuf[i] // XOR with new data
@@ -584,11 +587,11 @@ func GetFileEntry(storageType int, filename string, username string) (*TreeEntry
     if storageType == LOCALHOST {
         dbFilename := ""
         if filename[0] >= 0 && filename[0] <= 85 {
-            dbFilename = fmt.Sprintf("./storage/drive1/%s_1", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
         } else if filename[0] >= 86 && filename[0] <= 112 {
-            dbFilename = fmt.Sprintf("./storage/drive2/%s_2", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
         } else {
-            dbFilename = fmt.Sprintf("./storage/drive3/%s_3", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
         }
 
         // read in the database file and get root of the tree
@@ -669,11 +672,11 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
     if storageType == LOCALHOST {
         dbFilename := ""
         if filename[0] >= 0 && filename[0] <= 85 {
-            dbFilename = fmt.Sprintf("./storage/drive1/%s_1", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
         } else if filename[0] >= 86 && filename[0] <= 112 {
-            dbFilename = fmt.Sprintf("./storage/drive2/%s_2", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
         } else {
-            dbFilename = fmt.Sprintf("./storage/drive3/%s_3", username)
+            dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
         }
 
         // read in the database file and get root of the tree
