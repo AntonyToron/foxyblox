@@ -85,6 +85,53 @@ func pathExists(path string) (bool) {
     return !os.IsNotExist(err)
 }
 
+// return a tree entry corresponding to the read buffer
+func bufferToEntry(buf []byte, header *Header) (*TreeEntry) {
+    currentFilename := bytes.Trim(buf[0:header.FileNameSize], "\x00")
+    currentNode := TreeEntry{string(currentFilename), 0, 0, []string(nil)}
+
+    b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
+    err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
+    b = bytes.NewReader(buf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
+    err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
+
+    currentNode.Disks = make([]string, MAX_DISK_COUNT)
+    for i := 0; i < int(header.DiskCount); i++ {
+        upperBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + (i + 1) * int(header.DiskNameSize)
+        lowerBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + i * int(header.DiskNameSize)
+        currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
+    }
+
+    return &currentNode
+}
+
+// get the header in this dbFile
+func getHeader(dbFile *os.File) (Header) {
+    buf := make([]byte, HEADER_SIZE)
+    _, err := dbFile.ReadAt(buf, 0)
+    check(err)
+
+    var header Header
+    b := bytes.NewReader(buf)
+    err = binary.Read(b, binary.LittleEndian, &header)
+    check(err)
+
+    return header
+}
+
+// get the database that this file is stored in
+func getDbFilenameForFile(filename string, username string) string {
+    var dbFilename string = ""
+    if filename[0] >= 0 && filename[0] <= 85 {
+        dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
+    } else if filename[0] >= 86 && filename[0] <= 112 {
+        dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
+    } else {
+        dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
+    }
+    return dbFilename
+}
+
 func InitializeDatabaseStructure(storageType int, diskLocations []string) (bool) {
     if storageType == LOCALHOST {
         /*
@@ -275,25 +322,6 @@ func CreateDatabaseForUser(storageType int, dbdiskLocations []string,
     }
 }
 
-func bufferToEntry(buf []byte, header *Header) (*TreeEntry) {
-    currentFilename := bytes.Trim(buf[0:header.FileNameSize], "\x00")
-    currentNode := TreeEntry{string(currentFilename), 0, 0, []string(nil)}
-
-    b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
-    err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
-    b = bytes.NewReader(buf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
-    err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
-
-    currentNode.Disks = make([]string, MAX_DISK_COUNT)
-    for i := 0; i < int(header.DiskCount); i++ {
-        upperBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + (i + 1) * int(header.DiskNameSize)
-        lowerBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + i * int(header.DiskNameSize)
-        currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
-    }
-
-    return &currentNode
-}
-
 func resizeAllDbDisks(storageType int, dbdisklocations []string, username string) {
     if storageType == LOCALHOST {
         for i := 0; i < DISK_COUNT; i++ {
@@ -377,14 +405,7 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         // file, err := os.Open(filename); check(err) // don't need to open the file 
         // here, just putting specs in db
 
-        dbFilename := ""
-        if filename[0] >= 0 && filename[0] <= 85 {
-            dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
-        } else if filename[0] >= 86 && filename[0] <= 112 {
-            dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
-        } else {
-            dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
-        }
+        dbFilename := getDbFilenameForFile(filename, username)
 
         // read in the database file and get root of the tree
         dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
@@ -392,14 +413,7 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         fileStat, err := dbFile.Stat(); check(err);
         sizeOfDbFile := fileStat.Size(); // in bytes
 
-        buf := make([]byte, HEADER_SIZE)
-        dbFile.ReadAt(buf, 0)
-
-        header := Header{0, 0, 0, 0, 0, 0}
-        b := bytes.NewReader(buf)
-        err = binary.Read(b, binary.LittleEndian, &header)
-        check(err)
-
+        header := getHeader(dbFile)
         oldHeader := header
 
         /*
@@ -600,26 +614,13 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
 // here, storageType is in reference to where the database is stored
 func GetFileEntry(storageType int, filename string, username string) (*TreeEntry) {
     if storageType == LOCALHOST {
-        dbFilename := ""
-        if filename[0] >= 0 && filename[0] <= 85 {
-            dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
-        } else if filename[0] >= 86 && filename[0] <= 112 {
-            dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
-        } else {
-            dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
-        }
+        dbFilename := getDbFilenameForFile(filename, username)
 
         // read in the database file and get root of the tree
         dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
-
-        buf := make([]byte, HEADER_SIZE)
-        _, err = dbFile.ReadAt(buf, 0)
         check(err)
 
-        header := Header{0, 0, 0, 0, 0, 0}
-        binaryReader := bytes.NewReader(buf)
-        err = binary.Read(binaryReader, binary.LittleEndian, &header)
-        check(err)
+        header := getHeader(dbFile)
 
         /*
             Traverse the tree until you find a spot that you can insert the
@@ -652,21 +653,10 @@ func GetFileEntry(storageType int, filename string, username string) (*TreeEntry
             } else if filename == currentNode.Filename {
                 foundFileOrLeaf = true
                 foundFile = true
-
-                // if we really know we found it, then copy in the disk locations
-                // now, weren't necessary until now
-                currentNode.Disks = make([]string, MAX_DISK_COUNT)
-                for i := 0; i < int(header.DiskCount); i++ {
-                    upperBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + (i + 1) * int(header.DiskNameSize)
-                    lowerBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + i * int(header.DiskNameSize)
-                    currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
-                }
-
             } else { // go right if >
                 if currentNode.Right == 0 {
                     foundFileOrLeaf = true
                 } else { // traverse down to right one
-                    fmt.Printf("travelling right\n")
                     currentNodeLocation = currentNode.Right
                 }
             }
@@ -691,27 +681,13 @@ func GetFileEntry(storageType int, filename string, username string) (*TreeEntry
 */
 func DeleteFileEntry(storageType int, filename string, username string) (int) {
     if storageType == LOCALHOST {
-        dbFilename := ""
-        if filename[0] >= 0 && filename[0] <= 85 {
-            dbFilename = fmt.Sprintf("./storage/dbdrive0/%s_0", username)
-        } else if filename[0] >= 86 && filename[0] <= 112 {
-            dbFilename = fmt.Sprintf("./storage/dbdrive1/%s_1", username)
-        } else {
-            dbFilename = fmt.Sprintf("./storage/dbdrive2/%s_2", username)
-        }
+        dbFilename := getDbFilenameForFile(filename, username)
 
         // read in the database file and get root of the tree
         dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
         check(err)
 
-        buf := make([]byte, HEADER_SIZE)
-        dbFile.ReadAt(buf, 0)
-
-        header := Header{0, 0, 0, 0, 0, 0}
-        binaryReader := bytes.NewReader(buf)
-        err = binary.Read(binaryReader, binary.LittleEndian, &header)
-        check(err)
-
+        header := getHeader(dbFile)
         oldHeader := header
 
         // Start at root
@@ -771,20 +747,10 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
             Delete the file:
                 Reclaim that memory by adding it to the free list
                 Fix the tree by making nodes move up in the tree
-        */
-
-        // reclaim the memory, by prepending to the list, update link to root
-        // in header
-
-        /*
             Update the free list pointer: prepend this space to the list
-
-            TODO: prepending isn't actually the best thing to do here, the
-            spaces all the way at the beginning of the file kind of start to
-            starve
-                -> could be shrinking the database is the file is too large
         */
-        buf = make([]byte, SIZE_OF_ENTRY)
+
+        buf := make([]byte, SIZE_OF_ENTRY)
         p := new(bytes.Buffer)
         err = binary.Write(p, binary.LittleEndian, &header.FreeList)
         check(err)
@@ -810,16 +776,9 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
         _, err = dbParityFile.ReadAt(parityBuf, currentNodeLocation)
         check(err)
         for i := 0; i < len(parityBuf); i++ {
-            if currentNodeLocation + int64(i) == 2952 {
-                fmt.Printf("parityBuf = %x, oldEntry = %x, buf = %x\n", parityBuf[i], oldEntry[i], buf[i])
-            }
             parityBuf[i] ^= oldEntry[i]
             parityBuf[i] ^= buf[i]
-            if currentNodeLocation + int64(i) == 2952 {
-                fmt.Printf("after: %x\n", parityBuf[i])
-            }
         }
-        fmt.Printf("WRITING PARITY BUF TO %d\n", currentNodeLocation)
         _, err = dbParityFile.WriteAt(parityBuf, currentNodeLocation)
         check(err)
         // fix the tree
@@ -933,7 +892,6 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
             buf = new(bytes.Buffer)
             err = binary.Write(buf, binary.LittleEndian, &currentNode.Left)
             check(err)
-            fmt.Printf("Inheriting the following left link: %d\n", currentNode.Left)
 
             newPointer = buf.Bytes()
             _, err = dbFile.WriteAt(newPointer, candidateNodeLocation + int64(header.FileNameSize))
@@ -979,7 +937,6 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
 
             randomBuf := make([]byte, 1)
             _, err = dbParityFile.ReadAt(randomBuf, 2952)
-            fmt.Printf("Afterx: %x\n", randomBuf[0])
             /*
                 Last check: did that node you used as a replacement have any children?
                 It couldn't have had a left child, but if it had a right child, then
@@ -998,8 +955,6 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
                 buf := new(bytes.Buffer)
                 err = binary.Write(buf, binary.LittleEndian, &candidateNode.Right)
                 check(err)
-
-                fmt.Printf("Here for some reason\n")
 
                 // since it will now be the left child of the parent of candidate node
                 // ^ not true always (candidate node could be immediate to the right of currentNode)
@@ -1028,7 +983,6 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
                 // ^ not true always (candidate node could be immediate to the right of currentNode)
                 // need to check if the parent node of candidate node is still currentNode
                 offsetInCandPar := header.FileNameSize
-                fmt.Printf("Here for some reason\n")
                 _, err = dbFile.WriteAt(newPointer, candidateParentLocation + int64(offsetInCandPar))
                 check(err)
 
@@ -1047,7 +1001,6 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
 
             randomBuf = make([]byte, 1)
             _, err = dbParityFile.ReadAt(randomBuf, 2952)
-            fmt.Printf("Afterx: %x\n", randomBuf[0])
         }
 
         // update the true size of the database (we removed an entry, so freed
