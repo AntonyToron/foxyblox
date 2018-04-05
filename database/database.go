@@ -275,6 +275,25 @@ func CreateDatabaseForUser(storageType int, dbdiskLocations []string,
     }
 }
 
+func bufferToEntry(buf []byte, header *Header) (*TreeEntry) {
+    currentFilename := bytes.Trim(buf[0:header.FileNameSize], "\x00")
+    currentNode := TreeEntry{string(currentFilename), 0, 0, []string(nil)}
+
+    b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
+    err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
+    b = bytes.NewReader(buf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
+    err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
+
+    currentNode.Disks = make([]string, MAX_DISK_COUNT)
+    for i := 0; i < int(header.DiskCount); i++ {
+        upperBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + (i + 1) * int(header.DiskNameSize)
+        lowerBound := int(header.FileNameSize) + 2 * int(POINTER_SIZE) + i * int(header.DiskNameSize)
+        currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
+    }
+
+    return &currentNode
+}
+
 func resizeAllDbDisks(storageType int, dbdisklocations []string, username string) {
     if storageType == LOCALHOST {
         for i := 0; i < DISK_COUNT; i++ {
@@ -419,15 +438,7 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         for !foundInsertionPoint {
             // read in the current node
             dbFile.ReadAt(entryBuf, currentNodeLocation)
-
-            currentFilename := bytes.Trim(entryBuf[0:header.FileNameSize], "\x00")
-            currentNode := TreeEntry{string(currentFilename), 
-                                     0, 0, []string(nil)}
-
-            b := bytes.NewReader(entryBuf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
-            err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
-            b = bytes.NewReader(entryBuf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
-            err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
+            currentNode := bufferToEntry(entryBuf, &header)
 
             // go left if < (if equals, doesn't make sense to keep going)
             if filename < currentNode.Filename {
@@ -622,22 +633,13 @@ func GetFileEntry(storageType int, filename string, username string) (*TreeEntry
 
         foundFileOrLeaf := false
         foundFile := false
-        currentNode := TreeEntry{"", 0, 0, nil}
+        var currentNode *TreeEntry = nil
         for !foundFileOrLeaf {
             // read in the current node
             buf := make([]byte, SIZE_OF_ENTRY)
             dbFile.ReadAt(buf, currentNodeLocation)
 
-            currentFilename := bytes.Trim(buf[0:header.FileNameSize], "\x00")
-            currentNode = TreeEntry{string(currentFilename), 
-                                     0, 0, []string(nil)}
-
-            fmt.Printf("Currently on node: %s\n", currentNode.Filename)
-
-            b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
-            err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
-            b = bytes.NewReader(buf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
-            err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
+            currentNode = bufferToEntry(buf, &header)
 
             // go left if < (if equals, doesn't make sense to keep going)
             if filename < currentNode.Filename {
@@ -674,7 +676,7 @@ func GetFileEntry(storageType int, filename string, username string) (*TreeEntry
 
         if foundFile {
             fmt.Printf("Successfully got the file\n")
-            return &currentNode
+            return currentNode
         } else {
             return nil
         }
@@ -714,7 +716,8 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
 
         // Start at root
         currentNodeLocation := header.RootPointer
-        currentNode := TreeEntry{"", 0, 0, nil}
+        // currentNode := TreeEntry{"", 0, 0, nil}
+        var currentNode *TreeEntry = nil
         var parentNodeLocation int64 = 0
 
         foundFileOrLeaf := false
@@ -727,14 +730,7 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
             _, err = dbFile.ReadAt(currentNodeBuf, currentNodeLocation)
             check(err)
 
-            currentFilename := bytes.Trim(currentNodeBuf[0:header.FileNameSize], "\x00")
-            currentNode = TreeEntry{string(currentFilename), 
-                                     0, 0, []string(nil)}
-
-            b := bytes.NewReader(currentNodeBuf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
-            err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
-            b = bytes.NewReader(currentNodeBuf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
-            err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
+            currentNode = bufferToEntry(currentNodeBuf, &header)
 
             // go left if < (if equals, doesn't make sense to keep going)
             if filename < currentNode.Filename {
@@ -887,7 +883,7 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
             // find leftmost node in right subtree
             var candidateNodeLocation int64 = currentNode.Right
             var candidateParentLocation int64 = currentNodeLocation
-            candidateNode := TreeEntry{"", 0, 0, nil}
+            var candidateNode *TreeEntry = nil // &TreeEntry{"", 0, 0, []string(nil)}
             var foundLeftMost bool = false
             candidateBuf := make([]byte, SIZE_OF_ENTRY)
             candidateParentBuf := currentNodeBuf
@@ -896,14 +892,8 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
                 _, err = dbFile.ReadAt(buf, candidateNodeLocation)
                 check(err)
 
-                candidateNode := TreeEntry{string(buf[0:header.FileNameSize]), 
-                                         0, 0, []string(nil)}
-
-                b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + POINTER_SIZE])
-                err := binary.Read(b, binary.LittleEndian, &candidateNode.Left); check(err)
-                b = bytes.NewReader(buf[header.FileNameSize + POINTER_SIZE: header.FileNameSize + 2 * POINTER_SIZE])
-                err = binary.Read(b, binary.LittleEndian, &candidateNode.Right); check(err)
-
+                candidateNode = bufferToEntry(buf, &header)
+                
                 // if doesn't have a left child, then it is the leftmost
                 if candidateNode.Left == 0 {
                     foundLeftMost = true
@@ -1118,25 +1108,6 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
     return 1
 }
 
-func bufferToEntry(buf []byte, filenamesize int16, disknamesize uint8, diskcount uint8) (*TreeEntry) {
-    currentFilename := bytes.Trim(buf[0:filenamesize], "\x00")
-    currentNode := TreeEntry{string(currentFilename), 0, 0, []string(nil)}
-
-    b := bytes.NewReader(buf[filenamesize: filenamesize + POINTER_SIZE])
-    err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
-    b = bytes.NewReader(buf[filenamesize + POINTER_SIZE: filenamesize + 2 * POINTER_SIZE])
-    err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
-
-    currentNode.Disks = make([]string, MAX_DISK_COUNT)
-    for i := 0; i < int(diskcount); i++ {
-        upperBound := int(filenamesize) + 2 * int(POINTER_SIZE) + (i + 1) * int(disknamesize)
-        lowerBound := int(filenamesize) + 2 * int(POINTER_SIZE) + i * int(disknamesize)
-        currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
-    }
-
-    return &currentNode
-}
-
 func printTree(entry *TreeEntry, header *Header, dbFile *os.File, arr []string, level int) {
     if entry != nil {
         // fmt.Printf("%s\n", entry.Filename)
@@ -1145,7 +1116,7 @@ func printTree(entry *TreeEntry, header *Header, dbFile *os.File, arr []string, 
             entryBuf := make([]byte, SIZE_OF_ENTRY)
             _, err := dbFile.ReadAt(entryBuf, entry.Left)
             check(err)
-            child := bufferToEntry(entryBuf, header.FileNameSize, header.DiskNameSize, header.DiskCount)
+            child := bufferToEntry(entryBuf, header)
         
             printTree(child, header, dbFile, arr, level + 1)
         } else {
@@ -1155,7 +1126,7 @@ func printTree(entry *TreeEntry, header *Header, dbFile *os.File, arr []string, 
             entryBuf := make([]byte, SIZE_OF_ENTRY)
             _, err := dbFile.ReadAt(entryBuf, entry.Right)
             check(err)
-            child := bufferToEntry(entryBuf, header.FileNameSize, header.DiskNameSize, header.DiskCount)
+            child := bufferToEntry(entryBuf, header)
 
             printTree(child, header, dbFile, arr, level + 1)
         } else {
@@ -1189,7 +1160,7 @@ func PrettyPrintTree(storageType int, username string) {
         _, err = dbFile.ReadAt(entryBuf, header.RootPointer)
         check(err)
 
-        entry := bufferToEntry(entryBuf, header.FileNameSize, header.DiskNameSize, header.DiskCount)
+        entry := bufferToEntry(entryBuf, &header)
         
         arr := make([]string, 15)
         for i := 0; i < len(arr); i++ {
@@ -1226,7 +1197,7 @@ func PrettyPrintTreeGetString(storageType int, username string, disk int) ([]str
     _, err = dbFile.ReadAt(entryBuf, header.RootPointer)
     check(err)
 
-    entry := bufferToEntry(entryBuf, header.FileNameSize, header.DiskNameSize, header.DiskCount)
+    entry := bufferToEntry(entryBuf, &header)
     
     arr := make([]string, 11)
     for i := 0; i < len(arr); i++ {
