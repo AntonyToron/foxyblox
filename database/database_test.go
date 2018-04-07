@@ -838,14 +838,15 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
     // filename8 := "8"
     // filename9 := "9"
 
-    filenames := make([]string, 10)
+    amountOfFiles := 50
+    filenames := make([]string, amountOfFiles)
     for i := 0; i < len(filenames); i++ {
         filenames[i] = fmt.Sprintf("%d", i)
     }
 
     CreateDatabaseForUser(LOCALHOST, nil, username)
 
-    inDatabase := make([]bool, 10)
+    inDatabase := make([]bool, amountOfFiles)
     for i := 0; i < len(inDatabase); i++ {
         inDatabase[i] = false
     }
@@ -855,8 +856,8 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
 
     // initialize the database somewhat
     added := 0
-    for added != 5 {
-        num := rand.Intn(8) + 1
+    for added != (amountOfFiles / 2) {
+        num := rand.Intn(amountOfFiles - 1) + 1
         if !inDatabase[num] {
             AddFileSpecsToDatabase(filenames[num], username, LOCALHOST, nil)
             inDatabase[num] = true
@@ -874,9 +875,9 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         previousTree = currentTree
 
         // add one
-        num := rand.Intn(8) + 1
+        num := rand.Intn(amountOfFiles - 1) + 1
         for inDatabase[num] {
-            num = rand.Intn(8) + 1
+            num = rand.Intn(amountOfFiles - 1) + 1
         }
         AddFileSpecsToDatabase(filenames[num], username, LOCALHOST, nil)
         inDatabase[num] = true
@@ -887,9 +888,9 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         currentTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
 
         // get one
-        num = rand.Intn(8) + 1
+        num = rand.Intn(amountOfFiles - 1) + 1
         for !inDatabase[num] {
-            num = rand.Intn(8) + 1
+            num = rand.Intn(amountOfFiles - 1) + 1
         }
         entry := GetFileEntry(LOCALHOST, filenames[num], username)
         // previousTree = currentTree
@@ -925,9 +926,9 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         }
 
         // remove one
-        num = rand.Intn(8) + 1
+        num = rand.Intn(amountOfFiles - 1) + 1
         for !inDatabase[num] {
-            num = rand.Intn(8) + 1
+            num = rand.Intn(amountOfFiles - 1) + 1
         }
         errCode := DeleteFileEntry(LOCALHOST, filenames[num], username)
         previousDeletion = num
@@ -965,7 +966,14 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
 
         r++
     }
-
     
     removeDatabaseStructureAndCheck(t)
+}
+
+// TODO, have to figure out a way to stop the function halfway through
+// can manually extract one of the WAL files that happens in the tests above
+// and run ReplayLog to see if it makes the database do the same thing
+// can maybe add a boolean into commit that keeps the file or not
+func TestRecoveringFromSystemCrash(t *testing.T) {
+
 }

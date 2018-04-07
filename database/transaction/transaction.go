@@ -89,11 +89,9 @@ func New(dbFilenames []string, dbParityFilename string) *Transaction {
 }
 
 func getWALHeader(logFile *os.File) WALHeader {
-    fmt.Printf("Getting wal header\n")
     buf := make([]byte, SIZE_OF_WAL_HEADER)
     _, err := logFile.ReadAt(buf, 0)
     check(err)
-    fmt.Printf("Getting wal header\n")
     var filenames []string = make([]string, MAX_DISK_COUNT + NUM_PARITY_DISKS)
     for i := 0; i < MAX_DISK_COUNT + NUM_PARITY_DISKS; i++ {
         lowerBound := 2 + i * MAX_PATH_TO_DB
@@ -158,7 +156,6 @@ func HandleActionError(errCode int) {
 // in the log file, it's fine anyway (will be more intuitive instead of extending things unecessarily)
 func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) int {
     if len(newData) != len(oldData) { //|| len(newData) != SIZE_OF_ENTRY
-        fmt.Printf("Returning 1\n")
         return 1
     }
 
@@ -227,14 +224,12 @@ func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) i
 
     t.ActionAmount += 1
     header.EntryCount += 1
-    fmt.Printf("action amount: %d\n", t.ActionAmount)
 
     // update the header
     newHeader := headerToBuf(header)
     _, err = t.WAL.WriteAt(newHeader, 0)
     check(err)
 
-    fmt.Printf("Returning 0\n")
     return 0
 }
 
@@ -243,24 +238,15 @@ func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) i
 // prevent commit or don't do anything when no actions added
 func Commit(t *Transaction) {
     // mark the header in COMMIT state
-    fmt.Printf("got in commit\n")
-    if t.WAL == nil {
-        fmt.Printf("That's why\n")
-    }
     previousHeader := getWALHeader(t.WAL)
-    fmt.Printf("setting commit\n")
     previousHeader.Status = COMMIT
-    fmt.Printf("set commit\n")
     commitHeader := headerToBuf(previousHeader)
-    fmt.Printf("About to write header\n")
     _, err := t.WAL.WriteAt(commitHeader, 0)
     check(err)
-    fmt.Printf("before sync\n")
 
     // flush the COMMIT
     err = t.WAL.Sync()
     check(err)
-    fmt.Printf("Synced commit\n")
     // actually start performing the actions (can perform the writes to the
     // parity disk here, as well, because if a system crash happens, won't
     // be able to tell one case from another, so will just re-perform all of the
@@ -285,7 +271,7 @@ func Commit(t *Transaction) {
         buf := make([]byte, len(action.NewData))
         _, err = dbParityFile.ReadAt(buf, action.Location)
         check(err)
-      
+
         for j := 0; j < len(buf); j++ {
             buf[j] ^= action.OldData[j] ^ action.NewData[j] // old data ^ new data
         }
@@ -360,8 +346,16 @@ func ReplayLog(logName string) {
             check(err)
 
             otherDbBuf := make([]byte, SIZE_OF_ENTRY)
-            _, err = otherDb.ReadAt(otherDbBuf, entry.Location)
-            check(err)
+            fileStat, err := otherDb.Stat(); check(err)
+            sizeOfDb := fileStat.Size()
+            if entry.Location + SIZE_OF_ENTRY < sizeOfDb {
+                // if read was out of bounds of the file, then must have been in the
+                // middle of resizing the databases, so should just assume it to be 0
+
+                // this case is fine though
+                _, err = otherDb.ReadAt(otherDbBuf, entry.Location)
+                check(err)
+            }
 
             for k := 0; k < SIZE_OF_ENTRY; k++ {
                 parityBuf[k] ^= otherDbBuf[k] 
@@ -373,13 +367,14 @@ func ReplayLog(logName string) {
         check(err)
     }
 
-    // flush the redone changes to the database (including parity disk)
+    // flush the re-done changes to the database (including parity disk)
     err = dbFile.Sync()
     check(err)
     err = dbParityFile.Sync()
     check(err)
 
     // invalidate the log first (write 0 to the commit status bit)
+    // ^ don't think that needs to be done, b/c deleting a file is relatively atomic
 
     // delete the log file when certain that changes flushed into db
     log.Close()

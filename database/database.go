@@ -28,7 +28,7 @@ import (
     "fmt"
     "os"
     "log"
-    "math"
+    // "math"
     "os/exec"
     "bytes"
     "encoding/binary"
@@ -364,11 +364,39 @@ func CreateDatabaseForUser(storageType int, dbdiskLocations []string,
     }
 }
 
+/*
+    Used to keep all disks consistent same size, just so that XORing and updating
+    the parity disk is easier
+
+    TODO: make this a transaction in some way, maybe with one "action" that
+    doesn't really do anything and when you recover, you just check if all of
+    the disks are the same
+*/
 func resizeAllDbDisks(storageType int, dbdisklocations []string, username string) {
     if storageType == LOCALHOST {
+        // add onto the parity file (just append 0s accordingly, b/c
+        // exclusive OR of 0s is 0) - NOTE: resizing the parity disk first,
+        // because then if resizing is interrupted, the future writes to
+        // the regular disks won't cause EOF on the parity disk
+        dbParityFilename := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
+            
+        dbParityFile, err := os.OpenFile(dbParityFilename, os.O_RDWR, 0755)
+        check(err)
+
+        // double the size of the file (write zeroes into the file)
+        fileStat, err := dbParityFile.Stat(); check(err);
+        sizeOfDbFile := fileStat.Size(); // in bytes
+
+        buf := make([]byte, POINTER_SIZE)
+        _, err = dbParityFile.WriteAt(buf, sizeOfDbFile*2 - POINTER_SIZE)
+        check(err)
+
+        dbParityFile.Close()
+
+        // resize all of the other disks
         for i := 0; i < DISK_COUNT; i++ {
             dbFilename := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
-            
+
             dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
             check(err)
 
@@ -376,39 +404,14 @@ func resizeAllDbDisks(storageType int, dbdisklocations []string, username string
             fileStat, err := dbFile.Stat(); check(err);
             sizeOfDbFile := fileStat.Size(); // in bytes
 
-            numWritten := int64(0)
-            for numWritten != sizeOfDbFile {
-                bufSize := int64(math.Min(float64(sizeOfDbFile - numWritten), float64(BUFFER_SIZE)))
-                buf := make([]byte, bufSize)
-
-                dbFile.WriteAt(buf, sizeOfDbFile + numWritten)
-                numWritten += bufSize
-            }
+            // can just write a small buffer to the location where we want
+            // and will resize for us
+            buf := make([]byte, POINTER_SIZE)
+            _, err = dbFile.WriteAt(buf, sizeOfDbFile*2 - POINTER_SIZE)
+            check(err)
 
             dbFile.Close()
         }
-
-        // add onto the parity file as well (just append 0s accordingly, b/c
-        // exclusive OR of 0s is 0)
-        dbFilename := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
-            
-        dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
-        check(err)
-
-        // double the size of the file (write zeroes into the file)
-        fileStat, err := dbFile.Stat(); check(err);
-        sizeOfDbFile := fileStat.Size(); // in bytes
-
-        numWritten := int64(0)
-        for numWritten != sizeOfDbFile {
-            bufSize := int64(math.Min(float64(sizeOfDbFile - numWritten), float64(BUFFER_SIZE)))
-            buf := make([]byte, bufSize)
-
-            dbFile.WriteAt(buf, sizeOfDbFile + numWritten)
-            numWritten += bufSize
-        }
-
-        dbFile.Close()
 
         fmt.Printf("Resized all of the disks\n")
     }
@@ -535,6 +538,10 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
 
         // resize the files if this insertion will increase the size of this
         // database file
+        // TODO: can technically just only resize this disk, and make it
+        // just another transaction action, and wehn you have to recover,
+        // you just check if the parity disk is the same size as the largest
+        // disk, if not then extend it after you replay the log
         for (header.TrueDbSize + int64(SIZE_OF_ENTRY)) > sizeOfDbFile {
             // TODO: not sure if need to add resizing to transaction
             resizeAllDbDisks(storageType, nil, username)
@@ -574,14 +581,15 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         // pointer to next in free list = first 8 bytes in the
         // entry in free list, if all 0s, then end of free list
         insertionPointBuf := make([]byte, SIZE_OF_ENTRY) //POINTER_SIZE
-        fileStat, err = dbFile.Stat(); check(err);
-        sizeOfDbFile = fileStat.Size(); // in bytes
         _, err = dbFile.ReadAt(insertionPointBuf, header.FreeList)
         check(err)
+
+        // check(err)
         var pointer int64 = 0
         bufferReader := bytes.NewReader(insertionPointBuf)
         err = binary.Read(bufferReader, binary.LittleEndian, &pointer)
         check(err)
+
         insertionPoint := header.FreeList
         if pointer == 0 {
             // set free list to point to end of file, empty
@@ -614,6 +622,7 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
         fmt.Printf("Successfully added filename: %s to the database\n", filename)
     }
 }
+
 
 // here, storageType is in reference to where the database is stored
 func GetFileEntry(storageType int, filename string, username string) (*TreeEntry) {
@@ -918,7 +927,7 @@ func DeleteFileEntry(storageType int, filename string, username string) (int) {
                 errCode = transaction.AddAction(t, candidateParentBuf[offsetInCandPar:offsetInCandPar + POINTER_SIZE], 
                                             newPointer, candidateParentLocation + int64(offsetInCandPar))
                 transaction.HandleActionError(errCode)
-                
+
             } // don't need to do anything in other case, because link from candidate to its child is already correct
         }
 
