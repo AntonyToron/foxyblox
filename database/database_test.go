@@ -24,7 +24,7 @@ const SMALL_FILE_SIZE int = 1024
 const BUF_SIZE int = 1024
 const VERY_SMALL_FILE_SIZE = 6 // currently 1, 3 aren't working perfectly
 const REGULAR_FILE_SIZE int = 8192
-const ROUNDS = 10
+const ROUNDS = 100
 
 // 24
 var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(18))) //int64(math.Pow(2, float64(30))) // 1 GB
@@ -327,6 +327,7 @@ func TestAddingAFile(t *testing.T) {
                   HEADER_SIZE, false, 0, 2)
 
     removeDatabaseStructureAndCheck(t)
+    fmt.Println("finished testaddingfile")
 }
 
 func TestAddingMultipleFiles(t *testing.T) {
