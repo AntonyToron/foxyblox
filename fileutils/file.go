@@ -18,19 +18,24 @@ import (
     "errors"
     // "crypto/sha256"
     "crypto/md5"
-    "os/exec"
-    "bytes"
+    // "os/exec"
+    // "bytes"
     "strings"
+    "foxyblox/types"
     // "time"
 )
 
-const MAX_BUFFER_SIZE int = 8192*8; //1024, empirically 8192*8 seems pretty good, more testing needed for this
-const STRIP_COUNT int64 = 3;
-const MD5_SIZE = md5.Size;
+type readResponse struct {
+    payload []byte
+    err error
+}
 
-// storageType
-const LOCALHOST int = 0;
-const EBS int = 1;
+type readOp struct {
+    start int64
+    numBytes int64
+    response chan *readResponse
+    //response chan []byte // channel to send back the read bytes
+}
 
 /*
     Global Variables
@@ -44,14 +49,16 @@ var allowances []bool
 var allowanceLocks []sync.Mutex
 var allowanceConditions []*sync.Cond
 
-func initialize() {
+func initialize(configs *types.Config, diskLocations []string) {
+    dataDiskCount := len(diskLocations) - configs.ParityDiskCount
+
     payloadCount = 0
     m = sync.Mutex{};
     c = sync.NewCond(&m);
     parityWriterReady = false
-    allowances = make([]bool, STRIP_COUNT)
-    allowanceLocks = make([]sync.Mutex, STRIP_COUNT)
-    allowanceConditions = make([]*sync.Cond, STRIP_COUNT)
+    allowances = make([]bool, dataDiskCount)
+    allowanceLocks = make([]sync.Mutex, dataDiskCount)
+    allowanceConditions = make([]*sync.Cond, dataDiskCount)
     for i := 0; i < len(allowanceConditions); i++ {
         allowances[i] = true
         allowanceConditions[i] = sync.NewCond(&allowanceLocks[i]);
@@ -75,6 +82,13 @@ func openFile(path string) (*os.File, error) {
         return file, err
     }
 }
+
+// return true if either file or directory exists with given path
+func pathExists(path string) (bool) {
+    _, err := os.Stat(path)
+    return !os.IsNotExist(err)
+}
+
 
 /*
     Arguments:
@@ -132,26 +146,69 @@ func openFile(path string) (*os.File, error) {
         0 to 2 bits of 0s - you need at least one bit of padding which will end
         up as at least 1 byte most likely)
 
+        New TODO: make this compatible with adding in a username - add this to
+        the file structure of the user, and also allow passing in locations to
+        save in
+
+        Here, storageType is not necessary - should do a parse on each one of the
+        disk locations and save that component separately (use the regular
+        writers and readers for localhost/EBS, but need slightly special 
+        handling for the file otherwise [first create the file locally, and then
+        have to send it to the other systems if not local])
+
+        TODO: create folder under user's username if doesn't exist!!, in all of
+        the disks that exist locally, just so that the local writers don't have
+        any issues
+
+        // storageType int,
 */
-func SaveFile(path string, storageType int) {
-    //const STRIP_COUNT int64 = 3; // issue: might not be divisible by 3, padding?**
+func SaveFile(path string, username string, diskLocations []string, configs *types.Config) {
+    dataDisks := configs.Datadisks
+
+    // if user does not have a defined structure, create folders for him in all
+    // of the drives (maybe can do this in some sort of add user function)
+    // or maybe just need to do this for the ones in diskLocations
+    for i := 0; i < len(dataDisks); i++ {
+        // this won't work for all of the drives, since not all will have the
+        // perfect local structure TODO
+        directory := fmt.Sprintf("%s/%s", dataDisks[i], username)
+        if !pathExists(directory) {
+            os.Mkdir(directory, 0755)
+        }
+    }
+
+    /*
+        Modify diskLocations slightly to point it to saving somewhere locally
+        first, and then the components can be sent where they are actually
+        destined (if the location is not already local)
+    */
+
+    localDiskLocations := make([]string, len(diskLocations))
+    for i := 0; i < len(diskLocations); i++ {
+        // check if not local, TODO: just assigning it to be equal for now
+        localDiskLocations[i] = diskLocations[i]
+    }
+
 
     filename := filepath.Base(path);
     fmt.Printf("Filename: %s, path = %s\n", filename, path)
-    //file, err := os.Open(path); check(err);
-    file, err := os.Open(path); check(err);
+    originalFile, err := os.Open(path); check(err);
 
-    fileStat, err := file.Stat(); check(err);
+    fileStat, err := originalFile.Stat(); check(err);
     size := fileStat.Size(); // in bytes
     fmt.Printf("Size of file: %d\n", size)
+
+    dataDiskCount := len(diskLocations) - configs.ParityDiskCount
+    fmt.Printf("Data disk count: %d\n", dataDiskCount)
+
     /*
         Calculate length of the strips the file will be divided into
         Add padding to the last strip of the file to be even multiple of
         STRIP_COUNT
     */
-    remainder := size % STRIP_COUNT;
-    // may be > MAX_BUFFER_SIZE
-    var stripLength int64 = int64(math.Ceil(float64(size) / float64(STRIP_COUNT)));
+    remainder := size % int64(dataDiskCount);
+    // may be > types.MAX_BUFFER_SIZE
+    var stripLength int64 = int64(math.Ceil(float64(size) / float64(dataDiskCount)));
     var padding int64 = 0
     if remainder == 0 {
         /*
@@ -162,51 +219,89 @@ func SaveFile(path string, storageType int) {
         stripLength += 1;
         // took strip_count - 1 of your bytes and gave it to the other drives, 
         // one per each, + 1 for the necessary byte of padding
-        padding = STRIP_COUNT;
+        padding = int64(dataDiskCount);
     } else {
         /*
             Padding in this case is the difference between the file size and the
             calculated size given the strip length
         */
-        // stripLength = (size + remainder) / STRIP_COUNT;
-        padding = (stripLength * STRIP_COUNT) - size;
+        padding = (stripLength * int64(dataDiskCount)) - size;
     }
 
-    fmt.Printf("Strip length: %d\n", stripLength)
+    /*
+        Initiate the writers and readers
+    */
 
-    switch storageType {
-        case LOCALHOST:
-            saveLocalhost(file, filename, stripLength, size, padding)
-        case EBS:
-            fmt.Println("Not implemented")
-        default:
-            fmt.Println("Not implemented")
+    readRequests := make(chan *readOp, dataDiskCount)
+    parityChannel := make(chan []byte, dataDiskCount)
+    completionChannel := make(chan int, dataDiskCount + configs.ParityDiskCount)
+
+    // initializes all of the global condition variables and mutexes
+    initialize(configs, diskLocations)
+
+    // initiate a reader
+    go reader(originalFile, readRequests)
+
+    // initiate a parity writer
+    // TODO: this isn't entirely general, assumes only one parity disk regardless
+    parityDiskFile := fmt.Sprintf("%s/%s/%s_p", localDiskLocations[len(diskLocations) - 1],
+                                  username, filename)
+    go parityWriter(parityDiskFile, parityChannel,
+                    completionChannel, dataDiskCount)
+
+    // initiate the writers
+    for i := int64(0); i < int64(dataDiskCount); i++ {
+        // "./storage/drive" + i + "/" + filename + "_" + i,
+        storageFile := fmt.Sprintf("%s/%s/%s_%d", localDiskLocations[i],
+                                   username, filename, i)
+        // if this is the writer responsible for the last strip of the file,
+        // must add padding
+        if (i == int64(dataDiskCount) - 1) {
+
+            go writer(i * stripLength, (i + 1) * stripLength - padding,
+                  storageFile, readRequests, parityChannel, 
+                  completionChannel, padding, int(i))
+        } else {
+            // calculate start and end of this writer
+            go writer(i * stripLength, (i + 1) * stripLength,
+                  storageFile, readRequests, parityChannel, 
+                  completionChannel, 0, int(i)) // no padding necessary in earlier strips
+        }
     }
+
+    // wait for all of the writers to be done
+    for i := 0; i < dataDiskCount; i++ {
+        <- completionChannel // may want to get error codes here
+    }
+
+    close(parityChannel) // stop the parity writer
+
+    // wait until the parity writer finishes
+    <- completionChannel
+
+    close(completionChannel) // don't need it anymore
+    close(readRequests) // stop the reader channel
+
+    originalFile.Close()
+
+    /* TODO
+        Now, determine if any of the saved components need to be distributed
+        to other systems, by parsing through the names
+
+    */
 
     // file.Close(); <-- currently saveLocalhost does this for you
-}
-
-type readResponse struct {
-    payload []byte
-    err error
-}
-
-type readOp struct {
-    start int64
-    numBytes int64
-    response chan *readResponse
-    //response chan []byte // channel to send back the read bytes
 }
 
 // alternate design: can hold multiple parityStrips in memory and release them
 // once done with them (attach a tag to the buffer sent in parityChannel to
 // know to which parityStrip this goes to)
 func parityWriter(location string, parityChannel chan []byte, completionChannel chan int, 
-                  writerCount int64) {
+                  writerCount int) {
     parityFile, err := openFile(location); check(err)
 
     // unsigned parity strip
-    parityStrip := make([]byte, MAX_BUFFER_SIZE)
+    parityStrip := make([]byte, types.MAX_BUFFER_SIZE)
     var currentLocation int64 = 0
     localPayloadCount := 0
 
@@ -219,11 +314,11 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
         localPayloadCount++
         if localPayloadCount == 1 {
             // may need to shrink the parity strip
-            if  len(payload) < MAX_BUFFER_SIZE || len(payload) < len(parityStrip) {
+            if  len(payload) < types.MAX_BUFFER_SIZE || len(payload) < len(parityStrip) {
                 parityStrip = make([]byte, len(payload))
             } else {
                 // reset parityStrip
-                parityStrip = make([]byte, MAX_BUFFER_SIZE)
+                parityStrip = make([]byte, types.MAX_BUFFER_SIZE)
             }
         }
 
@@ -238,7 +333,7 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
             parityStrip[i] ^= payload[i]
         }
 
-        if localPayloadCount == 3 { // got all necessary parity bits
+        if localPayloadCount == writerCount { // got all necessary parity bits
             // can let the writers continue, perform this before initiating IO
             // to not block writers longer than necessary
             localPayloadCount = 0
@@ -308,6 +403,7 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
     // end should not be included [start, end)
     fmt.Printf("Writer initialized from %d to %d\n", start, end)
     file, err := openFile(location); check(err) // file to write into
+    fmt.Printf("Opened file\n")
     var currentLocation int64 = start;
     var locationInOutputFile int64 = 0;
 
@@ -331,7 +427,7 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
 
     for currentLocation < end { // should be <= for debugging? !=
         // construct a read request
-        num := int64(math.Min(float64(MAX_BUFFER_SIZE), float64(end - currentLocation)))
+        num := int64(math.Min(float64(types.MAX_BUFFER_SIZE), float64(end - currentLocation)))
         read := &readOp {
             start: currentLocation,
             numBytes: num,
@@ -405,86 +501,6 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
     fmt.Println("Writer exiting");
 }
 
-func saveLocalhost(originalFile *os.File, filename string, stripLength int64, fileSize int64,
-                   padding int64) {
-    // make: make allocates memory and initializes an object of type slice, map
-    // or chan (only), while new only allocates the memory, but leaves it zeroed
-
-    // chan: connects concurrent goroutines to pass values between them (chan's
-    // are therefore typed); sending into channel = [chan name] <- [value];
-    // receive the value by doing [value] <- [chan name]
-    // send and receives block until both sender/receiver are ready
-    // Note: by default, channels are unbuffered, so they only accept sneds if
-    // there is a corresponding receive already waiting, buffered channels
-    // accept a limited amount of values without a receiver
-    // ex: make(chan string, 2) // buffers up to 2 values
-
-    // can use <- chan to synchronize with the goroutines (i.e. pass in a
-    // channel used specifically to block on to the goroutine, and wait for the 
-    // goroutine to pass a completion value into the channel that you can 
-    // consume); see https://gobyexample.com/channel-synchronization, can also
-    // close the channel to communicate that (do a 2-value form of receive to
-    // check)
-    // -> to wait on multiple channels, can use select:
-    // https://gobyexample.com/select
-
-    // https://gobyexample.com/worker-pools - worker pools, to send jobs to
-
-    // design: one reader that takes read requests from multiple writers
-    // condition variable = for the parity drive to let the other drives know
-    // that they can send over their next chunk of data that they have read in
-    // -> the parity drive only broadcasts when it has successfully written the
-    // parity data and is ready for the next batch to come in
-
-    readRequests := make(chan *readOp, STRIP_COUNT)
-    parityChannel := make(chan []byte, STRIP_COUNT)
-    completionChannel := make(chan int, STRIP_COUNT + 1)
-
-    // initializes all of the global condition variables and mutexes
-    initialize()
-
-    // initiate a reader
-    go reader(originalFile, readRequests)
-
-    // initiate a parity writer (make these strings constants at the top)
-    go parityWriter("./storage/drivep/" + filename + "_p", parityChannel,
-                     completionChannel, STRIP_COUNT)
-
-    // initiate the writers
-    for i := int64(0); i < STRIP_COUNT; i++ {
-        // "./storage/drive" + i + "/" + filename + "_" + i,
-        storageFile := fmt.Sprintf("./storage/drive%d/%s_%d", i + 1, filename, i + 1)
-        // if this is the writer responsible for the last strip of the file,
-        // must add padding
-        if (i == STRIP_COUNT - 1) {
-
-            go writer(i * stripLength, (i + 1) * stripLength - padding,
-                  storageFile, readRequests, parityChannel, 
-                  completionChannel, padding, int(i))
-        } else {
-            // calculate start and end of this writer
-            go writer(i * stripLength, (i + 1) * stripLength,
-                  storageFile, readRequests, parityChannel, 
-                  completionChannel, 0, int(i)) // no padding necessary in earlier strips
-        }
-    }
-
-    // wait for all of the writers to be done
-    for i := int64(0); i < STRIP_COUNT; i++ {
-        <- completionChannel // may want to get error codes here
-    }
-
-    close(parityChannel) // stop the parity writer
-
-    // wait until the parity writer finishes
-    <- completionChannel
-
-    close(completionChannel) // don't need it anymore
-    close(readRequests) // stop the reader channel
-
-    originalFile.Close()
-}
-
 /*
     It has been determined that the drive with ID driveID is corrupted, when
     reading a portion of the file, located in offendingFile. Fix the drive by
@@ -494,21 +510,28 @@ func saveLocalhost(originalFile *os.File, filename string, stripLength int64, fi
 */
 func recoverFromDriveFailure(driveID int, offendingFile *os.File, 
                             offendingFileLocation string, outputFile *os.File, 
-                            storageType int, isParityDisk bool, hadPadding bool) {
+                            isParityDisk bool, hadPadding bool, diskLocations []string,
+                            username string, configs * types.Config) {
     /*
         Fix the drive, if appropriate
+        TODO: this is also not entirely geeneral yet, need to do this for
+        other types of systems too - note: the diskLocation passed in here is
+        probably not the broken one (we could have fetched this file from
+        some other disk, so should fix that external drive too)
     */
-    if storageType == EBS {
-        driveName := fmt.Sprintf("drive%d", driveID + 1)
-        cmd := exec.Command("fsck", driveName)
+    // if storageType == EBS {
+    //     driveName := fmt.Sprintf("drive%d", driveID + 1)
+    //     cmd := exec.Command("fsck", driveName)
 
-        var out bytes.Buffer
-        cmd.Stdout = &out
-        err := cmd.Run()
-        check(err)
+    //     var out bytes.Buffer
+    //     cmd.Stdout = &out
+    //     err := cmd.Run()
+    //     check(err)
 
-        fmt.Printf("Fsck stdout: %q\n", out.String())
-    }
+    //     fmt.Printf("Fsck stdout: %q\n", out.String())
+    // }
+
+    dataDiskCount := len(diskLocations) - configs.ParityDiskCount
 
     /*
         Delete the offending file, and recreate it with the correct data
@@ -534,16 +557,19 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         // when recovering the file, performance isn't as big of an issue because
         // of the rarity of the occasion (temporary implementation)
 
-        otherDriveFiles := make([]*os.File, STRIP_COUNT - 1)
+        otherDriveFiles := make([]*os.File, dataDiskCount - 1)
 
-        parityDriveFileName := fmt.Sprintf("storage/drivep/%s_p", rawFileName)
+        parityDriveFileName := fmt.Sprintf("%s/%s/%s_p", diskLocations[len(diskLocations) - 1],
+                                  username, rawFileName)
+
         parityDriveFile, err := os.Open(parityDriveFileName)
         check(err)
         
         count := 0
-        for i := 0; i < int(STRIP_COUNT); i++ {
+        for i := 0; i < dataDiskCount; i++ {
             if i != driveID {
-                tmpName := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, rawFileName, i + 1)
+                tmpName := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i],
+                                        username, rawFileName, i)
                 fmt.Printf("Tmp name: %s\n", tmpName)
                 otherDriveFiles[count], err = os.Open(tmpName); check(err)
 
@@ -553,11 +579,11 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
 
         fileStat, err := parityDriveFile.Stat(); check(err);
         rawSize := fileStat.Size(); // in bytes
-        rawSize -= MD5_SIZE
+        rawSize -= types.MD5_SIZE
         size := rawSize // subtract size for hash at end
 
-        trueParityStrip := make([]byte, MAX_BUFFER_SIZE)
-        buf := make([]byte, MAX_BUFFER_SIZE)
+        trueParityStrip := make([]byte, types.MAX_BUFFER_SIZE)
+        buf := make([]byte, types.MAX_BUFFER_SIZE)
 
         var currentLocation int64 = 0
         lastBuffer := false
@@ -565,14 +591,14 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
 
         for currentLocation != size {
             // check if need to resize the buffers
-            if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
+            if (size - currentLocation) < int64(types.MAX_BUFFER_SIZE) {
                 lastBuffer = true
                 newSize := size - currentLocation
 
                 trueParityStrip = make([]byte, newSize)
                 buf = make([]byte, newSize)
             } else {
-                trueParityStrip = make([]byte, MAX_BUFFER_SIZE)
+                trueParityStrip = make([]byte, types.MAX_BUFFER_SIZE)
             }
 
             // true parity strip
@@ -601,7 +627,7 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
             // make sure not to write the padding in here, though
             if hadPadding && lastBuffer {
                 truePaddingSize := 0
-                for i := len(trueParityStrip) - 1; i >= len(trueParityStrip) - int(STRIP_COUNT); i-- {
+                for i := len(trueParityStrip) - 1; i >= len(trueParityStrip) - dataDiskCount; i-- {
                     if trueParityStrip[i] == 0x80 {
                         truePaddingSize = len(trueParityStrip) - i
                         break
@@ -643,31 +669,32 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
             Read all of the other drive files, XOR them together, and write them
             to the parity drive
         */
-        otherDriveFiles := make([]*os.File, STRIP_COUNT)
+        otherDriveFiles := make([]*os.File, dataDiskCount)
 
-        for i := 0; i < int(STRIP_COUNT); i++ {
-            tmpName := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, rawFileName, i + 1)
+        for i := 0; i < dataDiskCount; i++ {
+            tmpName := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i],
+                                        username, rawFileName, i)
             otherDriveFiles[i], err = os.Open(tmpName); check(err)
         }
 
         fileStat, err := otherDriveFiles[0].Stat(); check(err);
         size := fileStat.Size(); // in bytes
-        size -= MD5_SIZE // chop off the hash
+        size -= types.MD5_SIZE // chop off the hash
 
-        filesParityStrip := make([]byte, MAX_BUFFER_SIZE)
-        buf := make([]byte, MAX_BUFFER_SIZE)
+        filesParityStrip := make([]byte, types.MAX_BUFFER_SIZE)
+        buf := make([]byte, types.MAX_BUFFER_SIZE)
 
         var currentLocation int64 = 0
         currentHash := md5.New()
         for currentLocation != size {
             // check if need to resize the buffers
-            if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
+            if (size - currentLocation) < int64(types.MAX_BUFFER_SIZE) {
                 newSize := size - currentLocation
 
                 filesParityStrip = make([]byte, newSize)
                 buf = make([]byte, newSize)
             } else {
-                filesParityStrip = make([]byte, MAX_BUFFER_SIZE)
+                filesParityStrip = make([]byte, types.MAX_BUFFER_SIZE)
             }
 
             // compute the missing piece by XORing all of the other strips
@@ -712,7 +739,10 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
 */
 func basicReaderWriter(filename string, outputFile *os.File, 
                        ID int, hasPadding bool, completionChannel chan int,
-                       canRecoverChannel chan int, storageType int) {
+                       canRecoverChannel chan int, diskLocations []string,
+                       username string, configs *types.Config) {
+    dataDiskCount := len(diskLocations) - configs.ParityDiskCount
+
     // read from respective slice, and write it to the output file
     file, err := os.Open(filename); check(err)
     fileStat, err := file.Stat(); check(err);
@@ -720,17 +750,17 @@ func basicReaderWriter(filename string, outputFile *os.File,
     size := rawSize
 
     // subtract the size of the hash at the end to get the true size
-    size -= int64(MD5_SIZE)
+    size -= int64(types.MD5_SIZE)
 
     offsetInOutput := int64(ID) * size
     var position int64 = 0
 
     currentHash := md5.New()
     lastBuffer := false
-    buf := make([]byte, MAX_BUFFER_SIZE)
+    buf := make([]byte, types.MAX_BUFFER_SIZE)
     for position != size {
 
-        if (size - position) <= int64(MAX_BUFFER_SIZE) { // will enter conditional at last bit of file
+        if (size - position) <= int64(types.MAX_BUFFER_SIZE) { // will enter conditional at last bit of file
             buf = make([]byte, size - position)
 
             // Should calculate padding on this buffer
@@ -751,7 +781,7 @@ func basicReaderWriter(filename string, outputFile *os.File,
         // calculate padding (if it exists) in this slice
         if hasPadding && lastBuffer {
             truePaddingSize := 0
-            for i := len(buf) - 1; i >= len(buf) - int(STRIP_COUNT); i-- {
+            for i := len(buf) - 1; i >= len(buf) - dataDiskCount; i-- {
                 if buf[i] == 0x80 {
                     truePaddingSize = len(buf) - i
                     break
@@ -790,28 +820,29 @@ func basicReaderWriter(filename string, outputFile *os.File,
 
     finalHash := currentHash.Sum(nil)
     fmt.Printf("Final hash ID %d: %x, length = %d\n", ID, finalHash, len(finalHash))
-    originalHash := make([]byte, MD5_SIZE)
-    _, err = file.ReadAt(originalHash, rawSize - MD5_SIZE)
+    originalHash := make([]byte, types.MD5_SIZE)
+    _, err = file.ReadAt(originalHash, rawSize - types.MD5_SIZE)
     check(err)
     fmt.Printf("Original hash ID %d: %x, length = %d\n", ID, originalHash, len(originalHash))
 
     var hashesMatch bool = true
-    if len(originalHash) != MD5_SIZE {
+    if len(originalHash) != types.MD5_SIZE {
         fmt.Printf("Original hash not correct length\n")
         hashesMatch = false
     }
-    for i := 0; i < MD5_SIZE; i++ {
+    for i := 0; i < types.MD5_SIZE; i++ {
         if (finalHash[i] != originalHash[i]) {
             hashesMatch = false
         }
     }
 
     if !hashesMatch {
-        completionChannel <- ID + 1
+        completionChannel <- ID
         <- canRecoverChannel // wait until master says that this drive can recover
         fmt.Printf("This drive is messed up, ID = %d\n", ID)
-        recoverFromDriveFailure(ID, file, filename, outputFile, storageType, 
-                                false, hasPadding)
+        recoverFromDriveFailure(ID, file, filename, outputFile, 
+                                false, hasPadding, diskLocations, username,
+                                configs)
 
         fmt.Printf("Successfully fixed drive ID = %d\n", ID)
     }
@@ -823,21 +854,21 @@ func basicReaderWriter(filename string, outputFile *os.File,
 }
 
 func basicParityChecker(filename string, parityCompletionChannel chan int, 
-                        canRecoverChannel chan int, storageType int) {
+                        canRecoverChannel chan int, diskLocations []string,
+                        username string, configs *types.Config) {
     parityFile, err := os.Open(filename); check(err)
 
     fileStat, err := parityFile.Stat()
     rawSize := fileStat.Size()
     size := rawSize
-    size -= MD5_SIZE
+    size -= types.MD5_SIZE
 
-    buf := make([]byte, MAX_BUFFER_SIZE)
+    buf := make([]byte, types.MAX_BUFFER_SIZE)
     currentHash := md5.New()
 
     var currentLocation int64 = 0
     for currentLocation != size {
-        if (size - currentLocation) < int64(MAX_BUFFER_SIZE) {
-            fmt.Printf("Current location: %d, size: %d\n", currentLocation, size)
+        if (size - currentLocation) < int64(types.MAX_BUFFER_SIZE) {
             buf = make([]byte, size - currentLocation)
         }
 
@@ -851,17 +882,17 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
 
     finalHash := currentHash.Sum(nil)
     fmt.Printf("Final hash parity: %x, length = %d\n", finalHash, len(finalHash))
-    originalHash := make([]byte, MD5_SIZE)
-    _, err = parityFile.ReadAt(originalHash, rawSize - MD5_SIZE)
+    originalHash := make([]byte, types.MD5_SIZE)
+    _, err = parityFile.ReadAt(originalHash, rawSize - types.MD5_SIZE)
     check(err)
     fmt.Printf("Original hash parity: %x, length = %d\n", originalHash, len(originalHash))
 
     var hashesMatch bool = true
-    if len(originalHash) != MD5_SIZE {
+    if len(originalHash) != types.MD5_SIZE {
         fmt.Printf("Original hash not correct length\n")
         hashesMatch = false
     }
-    for i := 0; i < MD5_SIZE; i++ {
+    for i := 0; i < types.MD5_SIZE; i++ {
         if (finalHash[i] != originalHash[i]) {
             hashesMatch = false
         }
@@ -871,8 +902,8 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
         parityCompletionChannel <- 1
         <- canRecoverChannel // wait until master says that this drive can recover
         fmt.Printf("This drive is messed up, ID = parity\n")
-        recoverFromDriveFailure(0, parityFile, filename, nil, storageType, 
-                                true, false)
+        recoverFromDriveFailure(0, parityFile, filename, nil, 
+                                true, false, diskLocations, username, configs)
 
         fmt.Printf("Successfully fixed drive ID = parity\n")
     }
@@ -886,7 +917,7 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
 /*
     Retrieve a file that was saved to the system
 
-    pathToFile = where the file is located in the file system of the person who
+    filename = where the file is located in the file system of the person who
     saved the file (just name of file for now)
 
         Note: can save a SHA-256 hash of the path that a user gave, and that
@@ -896,76 +927,63 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
 
         Can possibly do hash(user | pathToFile)
 
-    location = where to put the file after retreiving it
+    username = username of user asking for this file
+    diskLocations = where this file can be found
+    configs = configs for the system (where the database is, RAID level, etc.)
 
-    TODO:
-        - make sure to do checks to perform if a certain drive is not correct
-        or the file does not exist (can simulate this in a test by deleting
-        the file) - a writer can report that it doesn't have its drive back
-        to this function and we can spawn a new goroutine to use the parity
-        drive information (also might need to recover parity drive info so
-        may need to write that in this function as we start reading)
 */
-func getFileLocalhost(pathToFile string) { // location string
-    // can delete this after sent in real model
-    // buf := make([]byte, len(pathToFile))
-    // copy(buf[:], pathToFile)
-    // hash := sha256.Sum256(buf)
-    // s := string(hash[:len(hash)])
-    filename := fmt.Sprintf("downloaded-%s", pathToFile)
-    s := filename
-    // filename := fmt.Sprintf("tmp-%s", s)
+func GetFile(filename string, username string, diskLocations []string, configs *types.Config) {
+    dataDiskCount := len(diskLocations) - configs.ParityDiskCount
 
-    fmt.Printf("Creating file: %s\n", s)
-    outputFile, err := os.Create(filename); check(err)
+    localDiskLocations := diskLocations
+    for i := 0; i < len(diskLocations); i++ {
+        // check if not already local here
+        localDiskLocations[i] = diskLocations[i]
+    }
 
     /*
-        Check if any of the drives is down - recover appropriately if this is
-        the case.
-
-        For now, can just append the 256 byte hash of the file to the end of the
-        file and compare it each time I read the component (instead of having
-        to compute the XOR every single time, which might not be necessary
-        if not reading the whole file -> this might never happen for this
-        application though) -> XOR would just tell me something is wrong, still
-        don't know where something went wrong, so need to do the hash approach
-
-        the file will be corrupted if the sector went bad, so the hash will solve
-        this, just need to make sure to run fsck or something on the offending
-        drive
-
-        hash might be really slow though, maybe should hash in parts
-
-        since go hashing is not optimized, can just hash my buffer, keep a temporary
-        hashing variable = to that, then move onto the next buffer, hash it, and then
-        save the hash of those two together as the new value of the temporary variable,
-        and continuously do this until you finish the whole file (do this same
-        calculation whenever reading a segment of a file, error out if there is
-        some issue in the final comparison)
-
+        TODO: check if any of the disk locations are not localhost or EBS, if
+        they are stored somewhere else other than where the server can directly
+        access, then fetch them first and place them in the locations the
+        basic reader/writers expect (parse the disk locations here)
     */
+    for i := 0; i < len(diskLocations); i++ {
+        // pass into this function a local locations where to temporarily save
+        // the file, should possibly be doing load balancing instead of doing
+        // the disk that the server is on - might burn it out faster**
+        fetchDiskFileIfNotLocal(diskLocations[i], localDiskLocations[i], filename, username, configs);
+    }
 
-    completionChannel := make(chan int, STRIP_COUNT)
-    canRecoverChannel := make(chan int, STRIP_COUNT)
-    parityCompletionChannel := make(chan int, 1)
+    // can delete this after sent in real model
+    downloadedFilename := fmt.Sprintf("downloaded-%s", filename)
 
-    for i := 0; i < int(STRIP_COUNT); i++ {
-        sliceFilename := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, pathToFile, i + 1)
-        hasPadding := (i == int(STRIP_COUNT) - 1)
+    fmt.Printf("Creating file: %s\n", downloadedFilename)
+    outputFile, err := os.Create(downloadedFilename); check(err)
+
+    completionChannel := make(chan int, dataDiskCount)
+    canRecoverChannel := make(chan int, dataDiskCount)
+    parityCompletionChannel := make(chan int, configs.ParityDiskCount)
+
+    for i := 0; i < dataDiskCount; i++ {
+        sliceFilename := fmt.Sprintf("%s/%s/%s_%d", localDiskLocations[i],
+                                  username, filename, i)
+        hasPadding := (i == int(dataDiskCount) - 1) // second to last disk has the padding
         go basicReaderWriter(sliceFilename, outputFile, i, hasPadding, 
-                            completionChannel, canRecoverChannel, LOCALHOST)
+                            completionChannel, canRecoverChannel,
+                            localDiskLocations, username, configs)
     }
 
     // also create a basic reader to check the correctness of the redundant
     // bits stored on the parity disk
-    parityFilename := fmt.Sprintf("storage/drivep/%s_p", pathToFile)
+    parityFilename := fmt.Sprintf("%s/%s/%s_p", localDiskLocations[len(localDiskLocations) - 1],
+                                  username, filename)
     go basicParityChecker(parityFilename, parityCompletionChannel, 
-                        canRecoverChannel, LOCALHOST)
+                        canRecoverChannel, localDiskLocations, username, configs)
 
     // wait for all of the writers to be done
     numberOfErrors := 0
     // brokenDrive := -1
-    for i := int64(0); i < STRIP_COUNT; i++ {
+    for i := 0; i < dataDiskCount; i++ {
         errorCode := <- completionChannel // may want to get error codes here
         if errorCode != 0 { // some drive had an issue
             numberOfErrors++
@@ -973,7 +991,7 @@ func getFileLocalhost(pathToFile string) { // location string
         }
 
         // got all of the other drives
-        if i == STRIP_COUNT - int64(numberOfErrors) {
+        if i == dataDiskCount - numberOfErrors {
             // can let the drive(s) with errors know that they can use the
             // other drives' files
             // Note: for now, assuming only one drive will go down at a time
@@ -1008,31 +1026,27 @@ func getFileLocalhost(pathToFile string) { // location string
 }
 
 /*
-    Call to get file that was saved to the system
+    TODO: check for each file if it can be deleted locally, otherwise issue
+    a separate command/function to delete the component on the different
+    system
 */
-func GetFile(pathToFile string, storageType int) {
-    switch storageType {
-        case LOCALHOST:
-            getFileLocalhost(pathToFile)
-        case EBS:
-            fmt.Println("Not implemented")
-        default:
-            fmt.Println("Not implemented")
-    }
-}
+func RemoveFile(filename string, username string, diskLocations []string,
+                configs *types.Config) {
+    dataDiskCount := len(diskLocations) - configs.ParityDiskCount
 
-
-func removeFileLocalhost(filename string) {
-    for i := 0; i < int(STRIP_COUNT); i++ {
-        sliceFilename := fmt.Sprintf("storage/drive%d/%s_%d", i + 1, filename, i + 1)
-        
+    for i := 0; i < dataDiskCount; i++ {
+        sliceFilename := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i],
+                                  username, filename, i)
         // remove it, if it exists (which it should)
+        // TODO: this assumes that the file is stored locally, need to update
+        // this later
         if _, err := os.Stat(sliceFilename); !(os.IsNotExist(err)) { // file exists
             os.Remove(sliceFilename)
         }
     }
 
-    parityFilename := fmt.Sprintf("storage/drivep/%s_p", filename)
+    parityFilename := fmt.Sprintf("%s/%s/%s_p", diskLocations[len(diskLocations) - 1],
+                                  username, filename)
     // remove it, if it exists (which it should)
     if _, err := os.Stat(parityFilename); !(os.IsNotExist(err)) { // file exists
         os.Remove(parityFilename)
@@ -1041,15 +1055,13 @@ func removeFileLocalhost(filename string) {
     fmt.Printf("Removed file %s\n", filename)
 }
 
-func RemoveFile(pathToFile string, storageType int) {
-    switch storageType {
-        case LOCALHOST:
-            removeFileLocalhost(pathToFile)
-        case EBS:
-            fmt.Println("Not implemented")
-        default:
-            fmt.Println("Not implemented")
-    }
 
-    // database.DeleteFileEntry(storageType, pathToFile, )
+func fetchDiskFileIfNotLocal(diskLocation string, fetchLocation string, 
+                            filename string, username string, configs *types.Config) {
+    /*
+        TODO: implement, fetch the disk file if the disk location is not
+        accessible locally, put it in the place that writers and readers would
+        expect the file if it was local. Return if the disk location is 
+        accessible from the server.
+    */
 }

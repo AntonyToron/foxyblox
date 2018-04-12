@@ -17,27 +17,107 @@ import (
     "bytes"
     "os/exec"
     "time"
+    "foxyblox/types"
 )
 
 const SMALL_FILE_SIZE int = 1024
 const BUFFER_SIZE int = 1024
 const VERY_SMALL_FILE_SIZE = 6 // currently 1, 3 aren't working perfectly
 const REGULAR_FILE_SIZE int = 8192
-
+const TESTING_DISK_COUNT int = 3
 // 24
 var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(18))) //int64(math.Pow(2, float64(30))) // 1 GB
+var configs *types.Config
+var diskLocations []string
 
 func TestMain(m *testing.M) {
     fmt.Println("Setting up for tests")
 
     rand.Seed(time.Now().UTC().UnixNano()) // necessary to seed differently almost every time
-    os.Chdir("../") // go back to home directory
+    // os.Chdir("../") // go back to home directory
+
+    // initialize the configs for the system (level of RAID, database location, etc.)
+    dbDisks := make([]string, TESTING_DISK_COUNT + 1)
+    for i := 0; i < len(dbDisks); i++ {
+        dbDisks[i] = fmt.Sprintf(types.LOCALHOST_DBDISK, i)
+    }
+
+    diskLocations = make([]string, TESTING_DISK_COUNT + 1)
+    for i := 0; i < len(diskLocations); i++ {
+        diskLocations[i] = fmt.Sprintf("./storage/drive%d", i)
+    }
+
+    configs = &types.Config{Sys: types.LOCALHOST, Dbdisks: dbDisks,
+                       Datadisks: diskLocations,
+                       DataDiskCount: TESTING_DISK_COUNT, 
+                       ParityDiskCount: 1}
+
+    initializeDatabaseStructureLocal()
 
     retCode := m.Run()
 
     fmt.Println("Finished tests")
 
+    removeDatabaseStructureLocal()
+
+    // clean up
+    cmd := exec.Command("rm", "-rf", "./downloaded*", "./testing*")
+
+    var out bytes.Buffer
+    var stderr bytes.Buffer
+    cmd.Stdout = &out
+    cmd.Stderr = &stderr
+    err := cmd.Run()
+
+    if err != nil {
+        fmt.Printf("Diff stderr: %q\n", stderr.String())
+    }
+
+    fmt.Printf("Diff stdout: %q\n", out.String())
+
     os.Exit(retCode)
+}
+
+func initializeDatabaseStructureLocal() bool {
+    var madeChanges bool = false
+
+    if !pathExists("./storage") {
+        os.Mkdir("storage", types.REGULAR_FILE_MODE)
+        madeChanges = true
+    }
+
+    for i := 0; i < TESTING_DISK_COUNT + 1; i++ {
+        diskFolder := fmt.Sprintf("./storage/drive%d", i)
+        if !pathExists(diskFolder) {
+            os.Mkdir(diskFolder, types.REGULAR_FILE_MODE)
+            madeChanges = true
+        }
+        dbdiskFolder := fmt.Sprintf("./storage/dbdrive%d", i)
+        if !pathExists(dbdiskFolder) {
+            os.Mkdir(dbdiskFolder, types.REGULAR_FILE_MODE)
+            madeChanges = true
+        }
+    }
+
+    return madeChanges
+}
+
+func removeDatabaseStructureLocal() {
+    if pathExists("./storage") {
+        cmd := exec.Command("rm", "-rf", "./storage")
+
+        var out bytes.Buffer
+        var stderr bytes.Buffer
+        cmd.Stdout = &out
+        cmd.Stderr = &stderr
+        err := cmd.Run()
+
+        if err != nil {
+            fmt.Printf("Diff stderr: %q\n", stderr.String())
+        }
+
+        fmt.Printf("Diff stdout: %q\n", out.String())
+    }
 }
 
 func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string) {
@@ -47,6 +127,8 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
         t.Errorf("Could not create %d\n", testingFilename)
     }
 
+    username := "atoron"
+
     fileData := make([]byte, size)
     rand.Read(fileData)
 
@@ -55,15 +137,15 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
     startTime := time.Now()
 
     // call saveFile
-    SaveFile(testingFilename, LOCALHOST)
+    SaveFile(testingFilename, username, diskLocations, configs)
 
     elapsed := time.Since(startTime)
     fmt.Printf("Saving file of size %d took %s\n", size, elapsed)
 
     // check if the XOR of the components is correct
     currentXOR := make([]byte, size)
-    for i := 0; i < 3; i++ {
-        filename := fmt.Sprintf("./storage/drive%d/%s_%d", i + 1, testingFilename, i + 1)
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
+        filename := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i], username, testingFilename, i)
         file, err := os.Open(filename)
         if err != nil {
             t.Errorf("Could not open %d\n", filename)
@@ -74,16 +156,18 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
         }
 
         size := fileStat.Size()
-        size -= MD5_SIZE // strip off the hash at the end
+        size -= types.MD5_SIZE // strip off the hash at the end
 
         fileBuffer := make([]byte, size)
         file.ReadAt(fileBuffer, 0)
         for j := 0; j < int(size); j++ {
             currentXOR[j] ^= fileBuffer[j]
         }
+
+        file.Close()
     }
 
-    filename := fmt.Sprintf("./storage/drivep/%s_p", testingFilename)
+    filename := fmt.Sprintf("%s/%s/%s_p", diskLocations[len(diskLocations) - 1], username, testingFilename)
     file, err := os.Open(filename)
     if err != nil {
         t.Errorf("Could not open %d\n", filename)
@@ -94,7 +178,7 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
     }
 
     fileSize := fileStat.Size()
-    fileSize -= MD5_SIZE // strip off the hash at the end
+    fileSize -= types.MD5_SIZE // strip off the hash at the end
 
     fileBuffer := make([]byte, fileSize)
     file.ReadAt(fileBuffer, 0)
@@ -105,10 +189,12 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
         }
     }
 
+    file.Close()
+
     testingFilename = fmt.Sprintf("./%s", testingFilename)
     os.Remove(testingFilename)
     // remove the file
-    RemoveFile(testingFilename, LOCALHOST)
+    RemoveFile(testingFilename, username, diskLocations, configs)
 }
 
 func TestSavingCorrectnessVerySmallFile(t *testing.T) {
@@ -139,6 +225,8 @@ func TestSavingCorrectnessLargeFile(t *testing.T) {
 func TestGettingFile(t *testing.T) {
     // create sample file with random binary data
     testingFilename := "testingFileRegular.txt"
+    username := "atoron"
+
     testingFile, err := os.Create(testingFilename) // overwrite existing file if there
     if err != nil {
         t.Errorf("Could not create %d\n", testingFilename)
@@ -155,9 +243,9 @@ func TestGettingFile(t *testing.T) {
     }
 
     // call saveFile
-    SaveFile(testingFilename, LOCALHOST)
+    SaveFile(testingFilename, username, diskLocations, configs)
 
-    GetFile(testingFilename, LOCALHOST)
+    GetFile(testingFilename, username, diskLocations, configs)
 
     cmd := exec.Command("diff", testingFilename, "downloaded-" + testingFilename)
 
@@ -186,7 +274,7 @@ func TestGettingFile(t *testing.T) {
     testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
     os.Remove(testingFilename)
     // remove the file
-    RemoveFile(testingFilename, LOCALHOST)
+    RemoveFile(testingFilename, username, diskLocations, configs)
 }
 
 func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename string, fileToCorrupt string) {
@@ -196,13 +284,15 @@ func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename s
         t.Errorf("Could not create %d\n", testingFilename)
     }
 
+    username := "atoron"
+
     smallFileData := make([]byte, size)
     rand.Read(smallFileData)
 
     _, err = testingFile.WriteAt(smallFileData, 0)
 
     // call saveFile
-    SaveFile(testingFilename, LOCALHOST)
+    SaveFile(testingFilename, username, diskLocations, configs)
 
     // insert some faulty bits into the file
     file, err := os.OpenFile(fileToCorrupt, os.O_RDWR, 0755)
@@ -230,7 +320,7 @@ func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename s
 
     file.Close()
 
-    GetFile(testingFilename, LOCALHOST)
+    GetFile(testingFilename, username, diskLocations, configs)
 
     // diff should still be fine, because recovered
 
@@ -260,7 +350,7 @@ func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename s
     testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
     os.Remove(testingFilename)
     // remove the file
-    RemoveFile(testingFilename, LOCALHOST)
+    RemoveFile(testingFilename, username, diskLocations, configs)
 }
 
 func TestSimulatedDataDiskCorruption(t *testing.T) {
@@ -268,21 +358,24 @@ func TestSimulatedDataDiskCorruption(t *testing.T) {
 
     // create sample file with random binary data
     testingFilename := "testingFile.txt"
-    fileToCorrupt := fmt.Sprintf("./storage/drive1/%s_1", testingFilename)
+    username := "atoron"
+    fileToCorrupt := fmt.Sprintf("./storage/drive1/%s/%s_1", username, testingFilename)
     testSimulatedDiskCorruptionHelper(t, SMALL_FILE_SIZE, testingFilename, fileToCorrupt)
 }
 
 func TestSimulatedDataDiskCorruptionLarge(t *testing.T) {
     // create sample file with random binary data
     testingFilename := "testingFileLarge.txt"
-    fileToCorrupt := fmt.Sprintf("./storage/drive1/%s_1", testingFilename)
+    username := "atoron"
+    fileToCorrupt := fmt.Sprintf("./storage/drive1/%s/%s_1", username, testingFilename)
     testSimulatedDiskCorruptionHelper(t, int(LARGE_FILE_SIZE), testingFilename, fileToCorrupt)
 }
 
 func TestSimulatedDataDiskCorruptionLargeAndPadding(t *testing.T) {
     // create sample file with random binary data
     testingFilename := "testingFileLarge.txt"
-    fileToCorrupt := fmt.Sprintf("./storage/drive3/%s_3", testingFilename)
+    username := "atoron"
+    fileToCorrupt := fmt.Sprintf("./storage/drive%d/%s/%s_%d", TESTING_DISK_COUNT - 1, username, testingFilename, TESTING_DISK_COUNT - 1)
     testSimulatedDiskCorruptionHelper(t, int(LARGE_FILE_SIZE), testingFilename, fileToCorrupt)
 }
 
@@ -294,17 +387,19 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
         t.Errorf("Could not create %d\n", testingFilename)
     }
 
+    username := "atoron"
+
     smallFileData := make([]byte, LARGE_FILE_SIZE)
     rand.Read(smallFileData)
 
     _, err = testingFile.WriteAt(smallFileData, 0)
 
     // call saveFile
-    SaveFile(testingFilename, LOCALHOST)
+    SaveFile(testingFilename, username, diskLocations, configs)
 
     // insert some faulty bits into the file
-    file, err := os.OpenFile("./storage/drivep/" + testingFilename + "_p",
-                            os.O_RDWR, 0755)
+    parityFilename := fmt.Sprintf("./storage/drive%d/%s/%s_p", len(diskLocations) - 1, username, testingFilename)
+    file, err := os.OpenFile(parityFilename, os.O_RDWR, 0755)
     check(err)
 
     buf := make([]byte, 50)
@@ -320,13 +415,13 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
 
     file.Close()
 
-    GetFile(testingFilename, LOCALHOST)
+    GetFile(testingFilename, username, diskLocations, configs)
 
     // check that the parity disk is now correct
     // check if the XOR of the components is correct
     currentXOR := make([]byte, LARGE_FILE_SIZE) // / 3
-    for i := 0; i < 3; i++ {
-        filename := fmt.Sprintf("./storage/drive%d/%s_%d", i + 1, testingFilename, i + 1)
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
+        filename := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i], username, testingFilename, i)
         file, err := os.Open(filename)
         if err != nil {
             t.Errorf("Could not open %d\n", filename)
@@ -338,26 +433,27 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
 
         size := fileStat.Size()
         fmt.Printf("Size : %d\n", size)
-        size -= MD5_SIZE // strip off the hash at the end
+        size -= types.MD5_SIZE // strip off the hash at the end
         fileBuffer := make([]byte, size)
         file.ReadAt(fileBuffer, 0)
         for j := 0; j < int(size); j++ {
             currentXOR[j] ^= fileBuffer[j]
         }
+
+        file.Close()
     }
 
-    filename := fmt.Sprintf("./storage/drivep/%s_p", testingFilename)
-    file, err = os.Open(filename)
+    file, err = os.Open(parityFilename)
     if err != nil {
-        t.Errorf("Could not open %d\n", filename)
+        t.Errorf("Could not open %d\n", parityFilename)
     }
     fileStat, err := file.Stat()
     if err != nil {
-        t.Errorf("Could not check stat of %d\n", filename)
+        t.Errorf("Could not check stat of %d\n", parityFilename)
     }
 
     size := fileStat.Size()
-    size -= MD5_SIZE // strip off the hash at the end
+    size -= types.MD5_SIZE // strip off the hash at the end
     fmt.Printf("Going to check size %d bytes\n", size)
 
     fileBuffer := make([]byte, size)
@@ -370,10 +466,12 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
         }
     }
 
+    file.Close()
+
     testingFilename = fmt.Sprintf("./%s", testingFilename)
     os.Remove(testingFilename)
     // remove the file
-    RemoveFile(testingFilename, LOCALHOST)
+    RemoveFile(testingFilename, username, diskLocations, configs)
 }
 
 func TestRemoveFile(t *testing.T) {
@@ -384,37 +482,39 @@ func TestRemoveFile(t *testing.T) {
         t.Errorf("Could not create %d\n", testingFilename)
     }
 
+    username := "atoron"
+
     smallFileData := make([]byte, SMALL_FILE_SIZE)
     rand.Read(smallFileData)
 
     _, err = testingFile.WriteAt(smallFileData, 0)
 
     // call saveFile
-    SaveFile(testingFilename, LOCALHOST)
+    SaveFile(testingFilename, username, diskLocations, configs)
 
     // check that the files are there in the first place
-    for i := 0; i < 3; i++ {
-        stripFile := fmt.Sprintf("./storage/drive%d/%s_%d", i + 1, testingFilename, i + 1)
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
+        stripFile := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i], username, testingFilename, i)
         if _, err := os.Stat(stripFile); (os.IsNotExist(err)) { // file does not exist
             t.Errorf("One of the components does not exist")
         }
     }   
-    parityfile := fmt.Sprintf("./storage/drivep/%s_p", testingFilename)
+    parityfile := fmt.Sprintf("%s/%s/%s_p", diskLocations[len(diskLocations) - 1], username, testingFilename)
     if _, err := os.Stat(parityfile); (os.IsNotExist(err)) { // file does not exist
         t.Errorf("One of the components does not exist (parity)")
     }
 
     // remove the file
-    RemoveFile(testingFilename, LOCALHOST)
+    RemoveFile(testingFilename, username, diskLocations, configs)
 
     // files should no longer be there
     for i := 0; i < 3; i++ {
-        stripFile := fmt.Sprintf("./storage/drive%d/%s_%d", i + 1, testingFilename, i + 1)
+        stripFile := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i], username, testingFilename, i)
         if _, err := os.Stat(stripFile); !(os.IsNotExist(err)) { // file does not exist
             t.Errorf("One of the components still exists")
         }
     }   
-    parityfile = fmt.Sprintf("./storage/drivep/%s_p", testingFilename)
+    parityfile = fmt.Sprintf("%s/%s/%s_p", diskLocations[len(diskLocations) - 1], username, testingFilename)
     if _, err := os.Stat(parityfile); !(os.IsNotExist(err)) { // file does not exist
         t.Errorf("One of the components still exists (parity)")
     }

@@ -33,29 +33,9 @@ import (
     "bytes"
     "encoding/binary"
     "foxyblox/database/transaction"
+    "foxyblox/types"
     // "time"
 )
-
-// storageType
-const LOCALHOST int = 0;
-const EBS int = 1;
-
-const DISK_COUNT int = 3;
-const MAX_DISK_COUNT uint8 = 3;
-const REGULAR_FILE_MODE os.FileMode = 0755; // owner can rwx, but everyone else rx but not w
-const HEADER_SIZE int64 = 64;
-const MAX_FILE_NAME_SIZE int16 = 256 // (in bytes), will only accept ASCII characters for now
-const MAX_DISK_NAME_SIZE uint8 = 128
-const NUM_PARITY_DISKS  = 1
-const POINTER_SIZE = 8
-const SIZE_OF_ENTRY = MAX_FILE_NAME_SIZE + 2*(POINTER_SIZE) + int16(MAX_DISK_COUNT) * int16(MAX_DISK_NAME_SIZE)
-
-// entries in header
-const HEADER_FILE_SIZE int = 2
-const HEADER_DISK_SIZE int = 2
-const HEADER_DISK_AMT int = 3 
-
-const BUFFER_SIZE = 8192
 
 type Header struct {
     FileNameSize int16
@@ -66,12 +46,12 @@ type Header struct {
     TrueDbSize int64
 }
 
-type TreeEntry struct {
-    Filename string
-    Left int64
-    Right int64
-    Disks []string
-}
+// type TreeEntry struct {
+//     Filename string
+//     Left int64
+//     Right int64
+//     Disks []string
+// }
 
 // check error, exit if non-nil
 func check(err error) {
@@ -168,84 +148,117 @@ func getParityFilename(storageType int, username string, filename string) string
     return ""
 }
 
-func InitializeDatabaseStructure(storageType int, diskLocations []string) (bool) {
-    if storageType == LOCALHOST {
-        /*
-            Create the following structure if it doesn't already exist:
+func createIntermediateMkdir(path string) {
+    cmd := exec.Command("mkdir", "-p", path)
 
-            storage
-                drive1
-                drive2
-                drive3
-                drivep
+    var out bytes.Buffer
+    var stderr bytes.Buffer
+    cmd.Stdout = &out
+    cmd.Stderr = &stderr
+    err := cmd.Run()
+    check(err)
+}
 
-                dbdrive0
-                dbdrive1
-                dbdrive2
-                dbdrivep
-        */
-        var madeChanges bool = false
+func InitializeDatabaseStructureLocal() bool {
+    var madeChanges bool = false
 
-        if !pathExists("./storage") {
-            os.Mkdir("storage", REGULAR_FILE_MODE)
-            madeChanges = true
-        }
-
-        for i := 0; i < DISK_COUNT; i++ {
-            diskFolder := fmt.Sprintf("./storage/drive%d", i + 1)
-            if !pathExists(diskFolder) {
-                os.Mkdir(diskFolder, REGULAR_FILE_MODE)
-                madeChanges = true
-            }
-            dbdiskFolder := fmt.Sprintf("./storage/dbdrive%d", i)
-            if !pathExists(dbdiskFolder) {
-                os.Mkdir(dbdiskFolder, REGULAR_FILE_MODE)
-                madeChanges = true
-            }
-        }
-
-        parityFolder := fmt.Sprintf("./storage/drivep")
-        dbParityFolder := fmt.Sprintf("./storage/dbdrivep")
-        if !pathExists(parityFolder) {
-            os.Mkdir(parityFolder, REGULAR_FILE_MODE)
-            madeChanges = true
-        }
-        if !pathExists(dbParityFolder) {
-            os.Mkdir(dbParityFolder, REGULAR_FILE_MODE)
-            madeChanges = true
-        }
-
-        return madeChanges
-    } else {
-        fmt.Println("Not implemented yet.")
+    if !pathExists("./storage") {
+        os.Mkdir("storage", REGULAR_FILE_MODE)
+        madeChanges = true
     }
 
-    return false
+    for i := 0; i < DISK_COUNT; i++ {
+        diskFolder := fmt.Sprintf("./storage/drive%d", i)
+        if !pathExists(diskFolder) {
+            os.Mkdir(diskFolder, REGULAR_FILE_MODE)
+            madeChanges = true
+        }
+        dbdiskFolder := fmt.Sprintf("./storage/dbdrive%d", i)
+        if !pathExists(dbdiskFolder) {
+            os.Mkdir(dbdiskFolder, REGULAR_FILE_MODE)
+            madeChanges = true
+        }
+    }
+
+    parityFolder := fmt.Sprintf("./storage/drivep")
+    dbParityFolder := fmt.Sprintf("./storage/dbdrivep")
+    if !pathExists(parityFolder) {
+        os.Mkdir(parityFolder, REGULAR_FILE_MODE)
+        madeChanges = true
+    }
+    if !pathExists(dbParityFolder) {
+        os.Mkdir(dbParityFolder, REGULAR_FILE_MODE)
+        madeChanges = true
+    }
+
+    return madeChanges
+}
+
+// maybe get rid of storageType and just pass in the locations (since always
+// will be localhost or EBS anyway)
+func InitializeDatabaseStructure(diskLocations []string) (bool) {
+    /*
+        Create the following structure if it doesn't already exist:
+
+        storage
+            drive1
+            drive2
+            drive3
+            drivep
+
+            dbdrive0
+            dbdrive1
+            dbdrive2
+            dbdrivep
+    */
+    var madeChanges bool = false
+
+    for i := 0; i < DISK_COUNT; i++ {
+        if !pathExists(diskLocations[i]) {
+            createIntermediateMkdir(diskLocations[i])
+            madeChanges = true
+        }
+    }
+
+    return madeChanges
 }
 
 /*
     Recursively remove all files (including stored data and database files)
 */
-func RemoveDatabaseStructure(storageType int, diskLocations []string) {
-    if storageType == LOCALHOST {
+func RemoveDatabaseStructureLocal() {
+    if pathExists("./storage") {
+        cmd := exec.Command("rm", "-rf", "./storage")
 
-        if pathExists("./storage") {
-            cmd := exec.Command("rm", "-rf", "./storage")
+        var out bytes.Buffer
+        var stderr bytes.Buffer
+        cmd.Stdout = &out
+        cmd.Stderr = &stderr
+        err := cmd.Run()
 
-            var out bytes.Buffer
-            var stderr bytes.Buffer
-            cmd.Stdout = &out
-            cmd.Stderr = &stderr
-            err := cmd.Run()
-
-            if err != nil {
-                fmt.Printf("Diff stderr: %q\n", stderr.String())
-            }
-
-            fmt.Printf("Diff stdout: %q\n", out.String())
+        if err != nil {
+            fmt.Printf("Diff stderr: %q\n", stderr.String())
         }
-    } else {
-        fmt.Println("Not implemented yet.")
+
+        fmt.Printf("Diff stdout: %q\n", out.String())
+    }
+}
+
+func RemoveDatabaseStructure(diskLocations []string) {
+    for i := 0; i < len(diskLocations); i++ {
+        cmd := exec.Command("rm", "-rf", diskLocations[i])
+
+        var out bytes.Buffer
+        var stderr bytes.Buffer
+        cmd.Stdout = &out
+        cmd.Stderr = &stderr
+        err := cmd.Run()
+
+        if err != nil {
+            fmt.Printf("Diff stderr: %q\n", stderr.String())
+        }
+
+        fmt.Printf("Diff stdout: %q\n", out.String())
     }
 }
 
@@ -420,11 +433,14 @@ func resizeAllDbDisks(storageType int, dbdisklocations []string, username string
 /*
     dbdisklocations = optional, can specify exactly where user wants to store
     the data
+
+    TODO: make this use the config object
 */
-func AddFileSpecsToDatabase(filename string, username string, storageType int,
-            dbdisklocations []string) {
+func AddFileSpecsToDatabase(filename string, username string, dbdisklocations []string,
+                            storageType int) {
     if storageType == LOCALHOST {
         if !pathExists("./storage/dbdrive1/" + username + "_1") {
+            InitializeDatabaseStructure(LOCALHOST, nil)
             CreateDatabaseForUser(storageType, nil, username)
         }
 
@@ -627,6 +643,10 @@ func AddFileSpecsToDatabase(filename string, username string, storageType int,
 // here, storageType is in reference to where the database is stored
 func GetFileEntry(storageType int, filename string, username string) (*TreeEntry) {
     if storageType == LOCALHOST {
+        if !pathExists("./storage/dbdrive1/" + username + "_1") {
+            return nil
+        }
+
         dbFilename := getDbFilenameForFile(filename, username)
 
         // read in the database file and get root of the tree
@@ -694,6 +714,10 @@ func GetFileEntry(storageType int, filename string, username string) (*TreeEntry
 */
 func DeleteFileEntry(storageType int, filename string, username string) (int) {
     if storageType == LOCALHOST {
+        if !pathExists("./storage/dbdrive1/" + username + "_1") {
+            return 1
+        }
+
         dbFilenames := getDbFilenames(LOCALHOST, username, filename)
         dbFilename := dbFilenames[0] //getDbFilenameForFile(filename, username)
         dbParityFilename := getParityFilename(LOCALHOST, username, filename)
