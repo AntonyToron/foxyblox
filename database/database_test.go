@@ -18,6 +18,7 @@ import (
     "encoding/binary"
     // "os/exec"
     "time"
+    "foxyblox/types"
 )
 
 const SMALL_FILE_SIZE int = 1024
@@ -25,14 +26,33 @@ const BUF_SIZE int = 1024
 const VERY_SMALL_FILE_SIZE = 6 // currently 1, 3 aren't working perfectly
 const REGULAR_FILE_SIZE int = 8192
 const ROUNDS = 100
+const TESTING_DISK_COUNT = 3
 
 // 24
 var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(18))) //int64(math.Pow(2, float64(30))) // 1 GB
+var configs *types.Config
+var diskLocations []string
 
 func TestMain(m *testing.M) {
     fmt.Println("Setting up for tests")
 
     rand.Seed(time.Now().UTC().UnixNano()) // necessary to seed differently almost every time
+
+    // initialize the configs for the system (level of RAID, database location, etc.)
+    dbDisks := make([]string, TESTING_DISK_COUNT + 1)
+    for i := 0; i < len(dbDisks); i++ {
+        dbDisks[i] = fmt.Sprintf(types.LOCALHOST_DBDISK, i)
+    }
+
+    diskLocations = make([]string, TESTING_DISK_COUNT + 1)
+    for i := 0; i < len(diskLocations); i++ {
+        diskLocations[i] = fmt.Sprintf("./storage/drive%d", i)
+    }
+
+    configs = &types.Config{Sys: types.LOCALHOST, Dbdisks: dbDisks,
+                       Datadisks: diskLocations,
+                       DataDiskCount: TESTING_DISK_COUNT, 
+                       ParityDiskCount: 1}
 
     retCode := m.Run()
 
@@ -42,59 +62,59 @@ func TestMain(m *testing.M) {
 }
 
 func removeDatabaseStructureAndCheck(t *testing.T) {
-    RemoveDatabaseStructure(LOCALHOST, nil)
+    RemoveDatabaseStructureLocal()
 
     if pathExists("./storage") {
         t.Errorf("Did not delete a folder desired")
     }
     
-    for i := 0; i < DISK_COUNT; i++ {
-        diskFolder := fmt.Sprintf("./storage/drive%d", i + 1)
+    for i := 0; i < TESTING_DISK_COUNT + 1; i++ {
+        // diskFolder := fmt.Sprintf("./storage/drive%d", i + 1)
         dbdiskFolder := fmt.Sprintf("./storage/dbdrive%d", i)
-        if pathExists(diskFolder) || pathExists(dbdiskFolder) {
+        if pathExists(dbdiskFolder) { // pathExists(diskFolder) ||
             t.Errorf("Did not delete a folder desired")
         }
     }
 
-    parityFolder := fmt.Sprintf("./storage/drivep")
-    dbParityFolder := fmt.Sprintf("./storage/dbdrivep")
-    if pathExists(parityFolder) || pathExists(dbParityFolder) {
-        t.Errorf("Did not delete a folder desired")
-    }
+    // parityFolder := fmt.Sprintf("./storage/drivep")
+    // dbParityFolder := fmt.Sprintf("./storage/dbdrivep")
+    // if pathExists(dbParityFolder) { // pathExists(parityFolder) ||
+    //     t.Errorf("Did not delete a folder desired")
+    // }
 }
 
 func TestDatabaseInitializationAndRemoval(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     if !pathExists("./storage") {
         t.Errorf("Did not create a folder desired")
     }
     
-    for i := 0; i < DISK_COUNT; i++ {
-        diskFolder := fmt.Sprintf("./storage/drive%d", i + 1)
+    for i := 0; i < TESTING_DISK_COUNT + 1; i++ {
+        // diskFolder := fmt.Sprintf("./storage/drive%d", i)
         dbdiskFolder := fmt.Sprintf("./storage/dbdrive%d", i)
-        if !pathExists(diskFolder) || !pathExists(dbdiskFolder) {
+        if !pathExists(dbdiskFolder) { // !pathExists(diskFolder) ||
             t.Errorf("Did not create a folder desired")
         }
     }
 
-    parityFolder := fmt.Sprintf("./storage/drivep")
-    dbParityFolder := fmt.Sprintf("./storage/dbdrivep")
-    if !pathExists(parityFolder) || !pathExists(dbParityFolder) {
-        t.Errorf("Did not create a folder desired")
-    }
+    // // parityFolder := fmt.Sprintf("./storage/drivep")
+    // dbParityFolder := fmt.Sprintf("./storage/dbdrivep")
+    // if !pathExists(dbParityFolder) { // !pathExists(parityFolder) ||
+    //     t.Errorf("Did not create a folder desired")
+    // }
 
     removeDatabaseStructureAndCheck(t)
 }
 
 func TestDatabaseCreationAndRemoval(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
 
-    for i := 0; i < DISK_COUNT; i++ {
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
         dbCompLocation := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
         if !pathExists(dbCompLocation) {
             t.Errorf("Did not create all of the database files")
@@ -102,26 +122,26 @@ func TestDatabaseCreationAndRemoval(t *testing.T) {
         }
     }
 
-    dbParityFileName := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
+    dbParityFileName := fmt.Sprintf("./storage/dbdrive%d/%s_p", TESTING_DISK_COUNT, username)
     dbParityFile, err := os.Open(dbParityFileName); check(err)
-    parityBuf := make([]byte, HEADER_SIZE)
+    parityBuf := make([]byte, types.HEADER_SIZE)
     _, err = dbParityFile.ReadAt(parityBuf, 0)
 
-    testBuf := make([]byte, HEADER_SIZE)
+    testBuf := make([]byte, types.HEADER_SIZE)
 
     // check that headers are correct, and that the parity disk is correct as well
-    for i := 0; i < DISK_COUNT; i++ {
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
         dbCompLocation := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
         dbFile, err := os.Open(dbCompLocation)
         check(err)
 
         fileStat, err := dbFile.Stat(); check(err);
         sizeOfDbFile := fileStat.Size(); // in bytes
-        if sizeOfDbFile != HEADER_SIZE {
+        if sizeOfDbFile != types.HEADER_SIZE {
             t.Errorf("Incorrect database file size")
         }
 
-        buf := make([]byte, HEADER_SIZE)
+        buf := make([]byte, types.HEADER_SIZE)
         _, err = dbFile.ReadAt(buf, 0)
         check(err)
 
@@ -130,13 +150,13 @@ func TestDatabaseCreationAndRemoval(t *testing.T) {
         err = binary.Read(b, binary.LittleEndian, &header)
         check(err)
 
-        if header.FileNameSize != MAX_FILE_NAME_SIZE || header.DiskCount != MAX_DISK_COUNT {
+        if header.FileNameSize != types.MAX_FILE_NAME_SIZE || header.DiskCount != types.MAX_DISK_COUNT {
             t.Errorf("Part of the header is incorrect")
         }
-        if header.DiskNameSize != MAX_DISK_NAME_SIZE || header.RootPointer != HEADER_SIZE {
+        if header.DiskNameSize != types.MAX_DISK_NAME_SIZE || header.RootPointer != types.HEADER_SIZE {
             t.Errorf("Part of the header is incorrect")
         }
-        if header.FreeList != HEADER_SIZE + int64(SIZE_OF_ENTRY) || header.TrueDbSize != HEADER_SIZE + int64(SIZE_OF_ENTRY) {
+        if header.FreeList != types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY) || header.TrueDbSize != types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY) {
             t.Errorf("Part of the header is incorrect")
         }
 
@@ -156,9 +176,9 @@ func TestDatabaseCreationAndRemoval(t *testing.T) {
 
     dbParityFile.Close()
 
-    DeleteDatabaseForUser(LOCALHOST, nil, username)
+    DeleteDatabaseForUser(username, configs)
 
-    for i := 0; i < DISK_COUNT; i++ {
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
         // dbCompLocation := fmt.Sprintf("%s/%s_%d", dbdisklocations[i], username, i)
         dbCompLocation := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
 
@@ -167,7 +187,7 @@ func TestDatabaseCreationAndRemoval(t *testing.T) {
         }
     }
 
-    dbParityFileName = fmt.Sprintf("./storage/dbdrivep/%s_p", username)
+    dbParityFileName = fmt.Sprintf("./storage/dbdrive%d/%s_p", TESTING_DISK_COUNT, username)
     if pathExists(dbParityFileName) {
         t.Errorf("Did not remove all the database files")
     }
@@ -178,7 +198,7 @@ func TestDatabaseCreationAndRemoval(t *testing.T) {
 func addFileHelper(t *testing.T, filename string, username string, 
                 shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
                 addedSoFar int, driveAddedTo int) {
-    AddFileSpecsToDatabase(filename, username, LOCALHOST, nil)
+    AddFileSpecsToDatabase(filename, username, configs.Datadisks, configs)
 
     // check that the entry is in the correct spot, and that the header was
     // updated accordingly
@@ -187,16 +207,16 @@ func addFileHelper(t *testing.T, filename string, username string,
     dbFile, err := os.Open(dbFilename)
     check(err)
 
-    buf := make([]byte, SIZE_OF_ENTRY)
+    buf := make([]byte, types.SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(buf, shouldBeAddedAt)
     check(err)
 
-    entryFilename := bytes.Trim(buf[0:MAX_FILE_NAME_SIZE], "\x00")
-    entry := TreeEntry{string(entryFilename), 0, 0, []string(nil)}
+    entryFilename := bytes.Trim(buf[0:types.MAX_FILE_NAME_SIZE], "\x00")
+    entry := types.TreeEntry{string(entryFilename), 0, 0, []string(nil)}
 
-    b := bytes.NewReader(buf[MAX_FILE_NAME_SIZE: MAX_FILE_NAME_SIZE + POINTER_SIZE])
+    b := bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE: types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Left); check(err)
-    b = bytes.NewReader(buf[MAX_FILE_NAME_SIZE + POINTER_SIZE: MAX_FILE_NAME_SIZE + 2 * POINTER_SIZE])
+    b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE: types.MAX_FILE_NAME_SIZE + 2 * types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Right); check(err)
 
     if entry.Filename != filename {
@@ -205,12 +225,13 @@ func addFileHelper(t *testing.T, filename string, username string,
         fmt.Printf("Length of filename is %d, should be %d\n", len(entry.Filename), len(filename))
     }
 
-    entry.Disks = make([]string, MAX_DISK_COUNT)
-    for i := 0; i < int(MAX_DISK_COUNT); i++ {
-        upperBound := int(MAX_FILE_NAME_SIZE) + 2 * int(POINTER_SIZE) + (i + 1) * int(MAX_DISK_NAME_SIZE)
-        lowerBound := int(MAX_FILE_NAME_SIZE) + 2 * int(POINTER_SIZE) + i * int(MAX_DISK_NAME_SIZE)
+    entry.Disks = make([]string, types.MAX_DISK_COUNT)
+    for i := 0; i < int(types.MAX_DISK_COUNT); i++ {
+        upperBound := int(types.MAX_FILE_NAME_SIZE) + 2 * int(types.POINTER_SIZE) + (i + 1) * int(types.MAX_DISK_NAME_SIZE)
+        lowerBound := int(types.MAX_FILE_NAME_SIZE) + 2 * int(types.POINTER_SIZE) + i * int(types.MAX_DISK_NAME_SIZE)
         entry.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
-        shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
+        // shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
+        shouldBe := configs.Datadisks[i]
         if entry.Disks[i] != shouldBe {
             t.Errorf("One of the disk locations is incorrect, it is %s", entry.Disks[i])
         }
@@ -221,15 +242,15 @@ func addFileHelper(t *testing.T, filename string, username string,
     }
 
     // check the parent entry now (root, in this case)
-    buf = make([]byte, SIZE_OF_ENTRY)
+    buf = make([]byte, types.SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(buf, parentShouldBeAt)
     check(err)
 
-    entry = TreeEntry{string(buf[0:MAX_FILE_NAME_SIZE]), 0, 0, []string(nil)}
+    entry = types.TreeEntry{string(buf[0:types.MAX_FILE_NAME_SIZE]), 0, 0, []string(nil)}
 
-    b = bytes.NewReader(buf[MAX_FILE_NAME_SIZE: MAX_FILE_NAME_SIZE + POINTER_SIZE])
+    b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE: types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Left); check(err)
-    b = bytes.NewReader(buf[MAX_FILE_NAME_SIZE + POINTER_SIZE: MAX_FILE_NAME_SIZE + 2 * POINTER_SIZE])
+    b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE: types.MAX_FILE_NAME_SIZE + 2 * types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Right); check(err)
 
     if !shouldBeLeft && entry.Right != shouldBeAddedAt {
@@ -247,7 +268,7 @@ func addFileHelper(t *testing.T, filename string, username string,
     // }
 
     // check the header now
-    buf = make([]byte, HEADER_SIZE)
+    buf = make([]byte, types.HEADER_SIZE)
     _, err = dbFile.ReadAt(buf, 0)
     check(err)
 
@@ -257,11 +278,11 @@ func addFileHelper(t *testing.T, filename string, username string,
     check(err)
 
     // addedSoFar + 2 because include the root too
-    if header.TrueDbSize != HEADER_SIZE + int64(addedSoFar + 2)*int64(SIZE_OF_ENTRY) {
+    if header.TrueDbSize != types.HEADER_SIZE + int64(addedSoFar + 2)*int64(types.SIZE_OF_ENTRY) {
         t.Errorf("Truedbsize did not update properly")
     }
     // change this to freeListShouldBe
-    if header.FreeList != HEADER_SIZE + int64(addedSoFar + 2)*int64(SIZE_OF_ENTRY) {
+    if header.FreeList != types.HEADER_SIZE + int64(addedSoFar + 2)*int64(types.SIZE_OF_ENTRY) {
         t.Errorf("Free list pointer in header did not update properly, it is %d", header.FreeList)
     }
 
@@ -269,7 +290,7 @@ func addFileHelper(t *testing.T, filename string, username string,
 
 
     // also check that the parity disk is correct
-    dbParityFileName := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
+    dbParityFileName := fmt.Sprintf("%s/%s_p", configs.Dbdisks[len(configs.Dbdisks) - 1], username)
     dbParityFile, err := os.Open(dbParityFileName); check(err)
 
     fileStat, err := dbParityFile.Stat(); check(err);
@@ -281,8 +302,8 @@ func addFileHelper(t *testing.T, filename string, username string,
 
     testBuf := make([]byte, sizeOfParityFile)
 
-    for i := 0; i < DISK_COUNT; i++ {
-        dbFilename := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
+        dbFilename := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
         dbFile, err := os.Open(dbFilename)
         check(err)
 
@@ -316,22 +337,22 @@ func addFileHelper(t *testing.T, filename string, username string,
 }
 
 func TestAddingAFile(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
     filename := "testingFile.txt"
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
 
-    addFileHelper(t, filename, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 2)
+    addFileHelper(t, filename, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2)
 
     removeDatabaseStructureAndCheck(t)
     fmt.Println("finished testaddingfile")
 }
 
 func TestAddingMultipleFiles(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
     filename1 := "testingFile.txt"
@@ -344,24 +365,24 @@ func TestAddingMultipleFiles(t *testing.T) {
     filename1_4 := "saatingFile.txt"
     filename1_5 := "sattingFile.txt"
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
     // t *testing.T, filename string, username string, 
     //             shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
     //             addedSoFar int, driveAddedTo int
 
-    addFileHelper(t, filename1, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 2)
-    addFileHelper(t, filename2, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 0) // added so far is for an individual drive
-    addFileHelper(t, filename3, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 1)
+    addFileHelper(t, filename1, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2)
+    addFileHelper(t, filename2, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 0) // added so far is for an individual drive
+    addFileHelper(t, filename3, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 1)
 
-    addFileHelper(t, filename1_1, username, HEADER_SIZE + 2*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + int64(SIZE_OF_ENTRY), false, 1, 2)
-    addFileHelper(t, filename2_2, username, HEADER_SIZE + 2*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + int64(SIZE_OF_ENTRY), true, 1, 0)
-    addFileHelper(t, filename1_2, username, HEADER_SIZE + 3*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + int64(SIZE_OF_ENTRY), true, 2, 2)
+    addFileHelper(t, filename1_1, username, types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), false, 1, 2)
+    addFileHelper(t, filename2_2, username, types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), true, 1, 0)
+    addFileHelper(t, filename1_2, username, types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), true, 2, 2)
     /*
                 0
                / \
@@ -371,8 +392,8 @@ func TestAddingMultipleFiles(t *testing.T) {
     */
     // note that 2 is stored at header + 3* (size of entry) because of the "root"
     // in the header
-    addFileHelper(t, filename1_3, username, HEADER_SIZE + 4*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 3*int64(SIZE_OF_ENTRY), true, 3, 2)
+    addFileHelper(t, filename1_3, username, types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY), true, 3, 2)
 
     /*
                 0
@@ -383,8 +404,8 @@ func TestAddingMultipleFiles(t *testing.T) {
            /
           4
     */
-    addFileHelper(t, filename1_4, username, HEADER_SIZE + 5*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 4*int64(SIZE_OF_ENTRY), true, 4, 2)
+    addFileHelper(t, filename1_4, username, types.HEADER_SIZE + 5*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), true, 4, 2)
     /*
                 0
                / \
@@ -394,28 +415,28 @@ func TestAddingMultipleFiles(t *testing.T) {
            / \
           4   5
     */
-    addFileHelper(t, filename1_5, username, HEADER_SIZE + 6*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 4*int64(SIZE_OF_ENTRY), false, 5, 2)
+    addFileHelper(t, filename1_5, username, types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), false, 5, 2)
 
 
     removeDatabaseStructureAndCheck(t)
 }
 
 func TestGettingFile(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
     filename := "testingFile.txt"
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
     // t *testing.T, filename string, username string, 
     //             shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
     //             addedSoFar int, driveAddedTo int
 
-    addFileHelper(t, filename, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 2)
+    addFileHelper(t, filename, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2)
 
-    entry := GetFileEntry(LOCALHOST, filename, username)
+    entry := GetFileEntry(filename, username, configs)
     if entry == nil {
         t.Errorf("The entry returned is nil")
         removeDatabaseStructureAndCheck(t)
@@ -428,8 +449,9 @@ func TestGettingFile(t *testing.T) {
         fmt.Printf("Length of filename is %d, should be %d\n", len(entry.Filename), len(filename))
     }
 
-    for i := 0; i < int(MAX_DISK_COUNT); i++ {
-        shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
+    for i := 0; i < int(types.MAX_DISK_COUNT); i++ {
+        // shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
+        shouldBe := configs.Datadisks[i]
         if entry.Disks[i] != shouldBe {
             t.Errorf("One of the disk locations is incorrect, it is %s", entry.Disks[i])
         }
@@ -449,7 +471,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
     // note: in the context of the database, localhost just means that it will
     // be stored on the same machine but with the file structure, not really
     // separate drives (will be simulated with separate folders)
-    errCode := DeleteFileEntry(LOCALHOST, filename, username)
+    errCode := DeleteFileEntry(filename, username, configs)
 
     if shouldFindTheFile && errCode != 0 {
         t.Errorf("Error code is incorrect, should have found the file")
@@ -458,16 +480,16 @@ func deleteFileHelper(t *testing.T, filename string, username string,
 
     // check that the entry is no longer there, and that the header was
     // updated accordingly
-    dbFilename := fmt.Sprintf("./storage/dbdrive%d/%s_%d", drive, username, drive)
+    dbFilename := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[drive], username, drive)
     dbFile, err := os.Open(dbFilename)
     check(err)
 
-    buf := make([]byte, SIZE_OF_ENTRY)
+    buf := make([]byte, types.SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(buf, nodeWasAt)
     check(err)
 
     freeListPointer := int64(0)
-    b := bytes.NewReader(buf[0:POINTER_SIZE])
+    b := bytes.NewReader(buf[0:types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &freeListPointer); check(err)
 
     if freeListPointer != shouldNowPointTo {
@@ -475,20 +497,20 @@ func deleteFileHelper(t *testing.T, filename string, username string,
     }
 
     // check the parent entry now (root, in this case)
-    buf = make([]byte, SIZE_OF_ENTRY)
+    buf = make([]byte, types.SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(buf, parentWasAt)
     check(err)
 
-    entryFilename := bytes.Trim(buf[0:MAX_FILE_NAME_SIZE], "\x00")
-    entry := TreeEntry{string(entryFilename), 0, 0, []string(nil)}
+    entryFilename := bytes.Trim(buf[0:types.MAX_FILE_NAME_SIZE], "\x00")
+    entry := types.TreeEntry{string(entryFilename), 0, 0, []string(nil)}
 
     if entry.Filename == filename {
         t.Errorf("Parent has same filename as deleted node for some reason")
     }
 
-    b = bytes.NewReader(buf[MAX_FILE_NAME_SIZE: MAX_FILE_NAME_SIZE + POINTER_SIZE])
+    b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE: types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Left); check(err)
-    b = bytes.NewReader(buf[MAX_FILE_NAME_SIZE + POINTER_SIZE: MAX_FILE_NAME_SIZE + 2 * POINTER_SIZE])
+    b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE: types.MAX_FILE_NAME_SIZE + 2 * types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Right); check(err)
 
     if !wasLeft && entry.Right != parentShouldPointTo {
@@ -500,7 +522,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
     }
 
     // check the header now
-    buf = make([]byte, HEADER_SIZE)
+    buf = make([]byte, types.HEADER_SIZE)
     _, err = dbFile.ReadAt(buf, 0)
     check(err)
 
@@ -510,7 +532,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
     check(err)
 
     // addedSofar because have to account for root
-    if header.TrueDbSize != HEADER_SIZE + int64(addedSoFar)*int64(SIZE_OF_ENTRY) {
+    if header.TrueDbSize != types.HEADER_SIZE + int64(addedSoFar)*int64(types.SIZE_OF_ENTRY) {
         t.Errorf("Truedbsize did not update properly")
     }
     if header.FreeList != freeListShouldBe {
@@ -521,7 +543,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
 
 
     // also check that the parity disk is correct
-    dbParityFileName := fmt.Sprintf("./storage/dbdrivep/%s_p", username)
+    dbParityFileName := fmt.Sprintf("%s/%s_p", configs.Dbdisks[len(configs.Dbdisks) - 1], username)
     dbParityFile, err := os.Open(dbParityFileName); check(err)
 
     fileStat, err := dbParityFile.Stat(); check(err);
@@ -533,8 +555,8 @@ func deleteFileHelper(t *testing.T, filename string, username string,
 
     testBuf := make([]byte, sizeOfParityFile)
 
-    for i := 0; i < DISK_COUNT; i++ {
-        dbFilename := fmt.Sprintf("./storage/dbdrive%d/%s_%d", i, username, i)
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
+        dbFilename := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
         dbFile, err := os.Open(dbFilename)
         check(err)
 
@@ -569,7 +591,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
 }
 
 func TestDeletingAFile(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
     filename1 := "testingFile.txt"
@@ -582,31 +604,31 @@ func TestDeletingAFile(t *testing.T) {
     // filename1_4 := "saatingFile.txt"
     // filename1_5 := "sattingFile.txt"
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
     // t *testing.T, filename string, username string, 
     //             shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
     //             addedSoFar int, driveAddedTo int
 
-    addFileHelper(t, filename1, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 2)
+    addFileHelper(t, filename1, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2)
 
     // t *testing.T, filename string, username string,
     //                   shouldFindTheFile bool, parentWasAt int64, nodeWasAt int64,
     //                   freeListShouldBe int64, shouldNowPointTo int64, wasLeft bool,
     //                   parentShouldPointTo int64, addedSoFar int, drive int
 
-    // shouldNowPointTo should point to HEADER_SIZE + 2*(size of entry) because it
+    // shouldNowPointTo should point to types.HEADER_SIZE + 2*(size of entry) because it
     // points to what the free list used to point to before it got deleted
-    deleteFileHelper(t, filename1, username, true, HEADER_SIZE,
-                    HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                    HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                    HEADER_SIZE + 2*int64(SIZE_OF_ENTRY), false, 0, 1, 2)
+    deleteFileHelper(t, filename1, username, true, types.HEADER_SIZE,
+                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                    types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY), false, 0, 1, 2)
 
     removeDatabaseStructureAndCheck(t)
 }
 
 func TestDeletingMultipleFiles(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
     filename1 := "testingFile.txt"
@@ -620,50 +642,50 @@ func TestDeletingMultipleFiles(t *testing.T) {
     filename1_5 := "sattingFile.txt"
     filename1_6 := "sabtingFile.txt"
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
     // t *testing.T, filename string, username string, 
     //             shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
     //             addedSoFar int, driveAddedTo int
 
-    addFileHelper(t, filename1, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 2)
+    addFileHelper(t, filename1, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2)
 
     // t *testing.T, filename string, username string,
     //                   shouldFindTheFile bool, parentWasAt int64, nodeWasAt int64,
     //                   freeListShouldBe int64, shouldNowPointTo int64, wasLeft bool,
     //                   parentShouldPointTo int64, addedSoFar int, drive int
 
-    // shouldNowPointTo should point to HEADER_SIZE + 2*(size of entry) because it
+    // shouldNowPointTo should point to types.HEADER_SIZE + 2*(size of entry) because it
     // points to what the free list used to point to before it got deleted
-    deleteFileHelper(t, filename1, username, true, HEADER_SIZE,
-                    HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                    HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                    HEADER_SIZE + 2*int64(SIZE_OF_ENTRY), false, 0, 1, 2)
+    deleteFileHelper(t, filename1, username, true, types.HEADER_SIZE,
+                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                    types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY), false, 0, 1, 2)
 
-    addFileHelper(t, filename2, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 0)
+    addFileHelper(t, filename2, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 0)
 
-    addFileHelper(t, filename3, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 1)
+    addFileHelper(t, filename3, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 1)
 
-    deleteFileHelper(t, filename2, username, true, HEADER_SIZE,
-                    HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                    HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                    HEADER_SIZE + 2*int64(SIZE_OF_ENTRY), false, 0, 1, 0)
+    deleteFileHelper(t, filename2, username, true, types.HEADER_SIZE,
+                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                    types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY), false, 0, 1, 0)
 
 
     // re-add files, drive 2 should be empty now (as well as drive 0)
 
-    addFileHelper(t, filename1, username, HEADER_SIZE + int64(SIZE_OF_ENTRY), 
-                  HEADER_SIZE, false, 0, 2)
-    addFileHelper(t, filename1_1, username, HEADER_SIZE + 2*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + int64(SIZE_OF_ENTRY), false, 1, 2)
+    addFileHelper(t, filename1, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2)
+    addFileHelper(t, filename1_1, username, types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), false, 1, 2)
     // add at header + (size of entry) now because the entry that was there before
     // was deleted (i.e. the parent of 2_2))
-    addFileHelper(t, filename2_2, username, HEADER_SIZE + int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE, false, 0, 0)
-    addFileHelper(t, filename1_2, username, HEADER_SIZE + 3*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + int64(SIZE_OF_ENTRY), true, 2, 2)
+    addFileHelper(t, filename2_2, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE, false, 0, 0)
+    addFileHelper(t, filename1_2, username, types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), true, 2, 2)
     /*
                 0
                / \
@@ -673,8 +695,8 @@ func TestDeletingMultipleFiles(t *testing.T) {
     */
     // note that 2 is stored at header + 3* (size of entry) because of the "root"
     // in the header
-    addFileHelper(t, filename1_3, username, HEADER_SIZE + 4*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 3*int64(SIZE_OF_ENTRY), true, 3, 2)
+    addFileHelper(t, filename1_3, username, types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY), true, 3, 2)
 
     /*
                 0
@@ -685,8 +707,8 @@ func TestDeletingMultipleFiles(t *testing.T) {
            /
           4
     */
-    addFileHelper(t, filename1_4, username, HEADER_SIZE + 5*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 4*int64(SIZE_OF_ENTRY), true, 4, 2)
+    addFileHelper(t, filename1_4, username, types.HEADER_SIZE + 5*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), true, 4, 2)
     /*
                 0
                / \
@@ -696,8 +718,8 @@ func TestDeletingMultipleFiles(t *testing.T) {
            / \
           4   5
     */
-    addFileHelper(t, filename1_5, username, HEADER_SIZE + 6*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 4*int64(SIZE_OF_ENTRY), false, 5, 2)
+    addFileHelper(t, filename1_5, username, types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), false, 5, 2)
     /*
         Try deleting some of the intermediate entries now
 
@@ -714,9 +736,9 @@ func TestDeletingMultipleFiles(t *testing.T) {
     //                   freeListShouldBe int64, shouldNowPointTo int64, wasLeft bool,
     //                   parentShouldPointTo int64, addedSoFar int, drive int
 
-    deleteFileHelper(t, filename1_2, username, true, HEADER_SIZE + int64(SIZE_OF_ENTRY),
-                    HEADER_SIZE + 3*int64(SIZE_OF_ENTRY), HEADER_SIZE + 3*int64(SIZE_OF_ENTRY),
-                    HEADER_SIZE + 7*int64(SIZE_OF_ENTRY), true, HEADER_SIZE + 4*int64(SIZE_OF_ENTRY),
+    deleteFileHelper(t, filename1_2, username, true, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
+                    types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY), types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY),
+                    types.HEADER_SIZE + 7*int64(types.SIZE_OF_ENTRY), true, types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY),
                     6, 2)
 
     // adding it back should put it in same spot physically, but not same spot in tree,
@@ -724,8 +746,8 @@ func TestDeletingMultipleFiles(t *testing.T) {
     // t *testing.T, filename string, username string, 
     //             shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
     //             addedSoFar int, driveAddedTo int
-    addFileHelper(t, filename1_2, username, HEADER_SIZE + 3*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 6*int64(SIZE_OF_ENTRY), false, 5, 2)
+    addFileHelper(t, filename1_2, username, types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY), false, 5, 2)
     /*
         Added back 2:
                 0
@@ -750,13 +772,13 @@ func TestDeletingMultipleFiles(t *testing.T) {
               6   2
     */
 
-    addFileHelper(t, filename1_6, username, HEADER_SIZE + 7*int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 5*int64(SIZE_OF_ENTRY), false, 6, 2)
+    addFileHelper(t, filename1_6, username, types.HEADER_SIZE + 7*int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 5*int64(types.SIZE_OF_ENTRY), false, 6, 2)
 
     // since replacement = leftmost in right-hand tree, 5 would replace it
-    deleteFileHelper(t, filename1_3, username, true, HEADER_SIZE + int64(SIZE_OF_ENTRY),
-                    HEADER_SIZE + 4*int64(SIZE_OF_ENTRY), HEADER_SIZE + 4*int64(SIZE_OF_ENTRY),
-                    HEADER_SIZE + 8*int64(SIZE_OF_ENTRY), true, HEADER_SIZE + 6*int64(SIZE_OF_ENTRY),
+    deleteFileHelper(t, filename1_3, username, true, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
+                    types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY),
+                    types.HEADER_SIZE + 8*int64(types.SIZE_OF_ENTRY), true, types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY),
                     7, 2)
 
     /*
@@ -770,9 +792,9 @@ func TestDeletingMultipleFiles(t *testing.T) {
               6  
     */
     // 0 should point to 2 after this deletion
-    deleteFileHelper(t, filename1_5, username, true, HEADER_SIZE + int64(SIZE_OF_ENTRY),
-            HEADER_SIZE + 6*int64(SIZE_OF_ENTRY), HEADER_SIZE + 6*int64(SIZE_OF_ENTRY),
-            HEADER_SIZE + 4*int64(SIZE_OF_ENTRY), true, HEADER_SIZE + 3*int64(SIZE_OF_ENTRY),
+    deleteFileHelper(t, filename1_5, username, true, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
+            types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY), types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY),
+            types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), true, types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY),
             6, 2)
 
     /*
@@ -786,9 +808,9 @@ func TestDeletingMultipleFiles(t *testing.T) {
               6  
     */
     // root should point to 1 after this deletion
-    deleteFileHelper(t, filename1, username, true, HEADER_SIZE,
-            HEADER_SIZE + int64(SIZE_OF_ENTRY), HEADER_SIZE + int64(SIZE_OF_ENTRY),
-            HEADER_SIZE + 6*int64(SIZE_OF_ENTRY), false, HEADER_SIZE + 2*int64(SIZE_OF_ENTRY),
+    deleteFileHelper(t, filename1, username, true, types.HEADER_SIZE,
+            types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
+            types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY), false, types.HEADER_SIZE + 2*int64(types.SIZE_OF_ENTRY),
             5, 2)
 
     // add in a file and see if it goes to right place
@@ -805,8 +827,8 @@ func TestDeletingMultipleFiles(t *testing.T) {
               // t *testing.T, filename string, username string, 
     //             shouldBeAddedAt int64, parentShouldBeAt int64, shouldBeLeft bool,
     //             addedSoFar int, driveAddedTo int
-    addFileHelper(t, filename1_5, username, HEADER_SIZE + int64(SIZE_OF_ENTRY),
-                  HEADER_SIZE + 7*int64(SIZE_OF_ENTRY), false, 4, 2)
+    addFileHelper(t, filename1_5, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
+                  types.HEADER_SIZE + 7*int64(types.SIZE_OF_ENTRY), false, 4, 2)
 
     /*
         Should look like this now:
@@ -825,7 +847,7 @@ func TestDeletingMultipleFiles(t *testing.T) {
 }
 
 func TestOverallAddingGettingDeleting(t *testing.T) {
-    InitializeDatabaseStructure(LOCALHOST, nil)
+    InitializeDatabaseStructure(configs.Dbdisks)
 
     username := "atoron"
     // filename1 := "1"
@@ -844,7 +866,7 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         filenames[i] = fmt.Sprintf("%d", i)
     }
 
-    CreateDatabaseForUser(LOCALHOST, nil, username)
+    CreateDatabaseForUser(username, configs)
 
     inDatabase := make([]bool, amountOfFiles)
     for i := 0; i < len(inDatabase); i++ {
@@ -859,13 +881,13 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
     for added != (amountOfFiles / 2) {
         num := rand.Intn(amountOfFiles - 1) + 1
         if !inDatabase[num] {
-            AddFileSpecsToDatabase(filenames[num], username, LOCALHOST, nil)
+            AddFileSpecsToDatabase(filenames[num], username, configs.Datadisks, configs)
             inDatabase[num] = true
             added++
         }
     }
 
-    currentTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
+    currentTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
     middleTree := currentTree
     previousAddition := 0
     previousDeletion := 0
@@ -879,23 +901,23 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         for inDatabase[num] {
             num = rand.Intn(amountOfFiles - 1) + 1
         }
-        AddFileSpecsToDatabase(filenames[num], username, LOCALHOST, nil)
+        AddFileSpecsToDatabase(filenames[num], username, configs.Datadisks, configs)
         inDatabase[num] = true
         previousAddition = num
         // previousTree = currentTree
         // currentTree = PrettyPrintTreeGetString(LOCALHOST, username)
-        middleTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
-        currentTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
+        middleTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
+        currentTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
 
         // get one
         num = rand.Intn(amountOfFiles - 1) + 1
         for !inDatabase[num] {
             num = rand.Intn(amountOfFiles - 1) + 1
         }
-        entry := GetFileEntry(LOCALHOST, filenames[num], username)
+        entry := GetFileEntry(filenames[num], username, configs)
         // previousTree = currentTree
         // currentTree = PrettyPrintTreeGetString(LOCALHOST, username)
-        currentTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
+        currentTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
         if entry == nil {
             t.Errorf("Did not get entry %d at all", num)
             fmt.Printf("Added %d, deleted %d\n", previousAddition, previousDeletion)
@@ -930,11 +952,11 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         for !inDatabase[num] {
             num = rand.Intn(amountOfFiles - 1) + 1
         }
-        errCode := DeleteFileEntry(LOCALHOST, filenames[num], username)
+        errCode := DeleteFileEntry(filenames[num], username, configs)
         previousDeletion = num
         // previousTree = currentTree
         // currentTree = PrettyPrintTreeGetString(LOCALHOST, username)
-        currentTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
+        currentTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
         if errCode != 0 {
             t.Errorf("There was an error in deletion")
             fmt.Printf("Added %d, deleted %d\n", previousAddition, previousDeletion)
@@ -962,7 +984,7 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
             break
         }
         inDatabase[num] = false
-        currentTree = PrettyPrintTreeGetString(LOCALHOST, username, 0)
+        currentTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
 
         r++
     }

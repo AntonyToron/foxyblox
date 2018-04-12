@@ -31,7 +31,10 @@ const MAX_FILE_NAME_SIZE int16 = 256 // (in bytes), will only accept ASCII chara
 const MAX_DISK_NAME_SIZE uint8 = 128
 const NUM_PARITY_DISKS  = 1
 const POINTER_SIZE = 8
-const SIZE_OF_ENTRY = MAX_FILE_NAME_SIZE + 2*(POINTER_SIZE) + int16(MAX_DISK_COUNT) * int16(MAX_DISK_NAME_SIZE)
+
+// have to add 1 because parity disk also needs to be stored!
+const SIZE_OF_ENTRY = MAX_FILE_NAME_SIZE + 2*(POINTER_SIZE) + int16(MAX_DISK_COUNT + 1) * int16(MAX_DISK_NAME_SIZE)
+const ASCII = 255
 
 // entries in header
 const HEADER_FILE_SIZE int = 2
@@ -57,7 +60,7 @@ type Config struct {
     Sys int
     Dbdisks []string
     Datadisks []string // slice containing all of the data disks available locally, including those for parity
-    DataDiskCount int // default = 3
+    DataDiskCount int // default = 3, size of datadisks[] = datadiskcount + paritydiskcount
     ParityDiskCount int // default = 1 (RAID 4)
 }
 
@@ -119,4 +122,21 @@ type Config struct {
     different systems, that path will not be available on local machine,
     so using diskLocations[i] as the parameter to the writers isn't exactly
     correct
+
+
+    Todo:
+    transaction file still uses MAX_DISK_COUNT, maybe pass in the configs.DataDiskCount somehow
+        - this is an issue, b/c even though the user might decide to only spread across
+        2 or 3 places, we still need to store that many entries, because using RAID 4
+        - kind of an issue with that too, because if one service goes down entirely,
+        then if doing just RAID 4, won't be able to get back the stuff
+            -> need to basically downgrade the level of distribution, and almost
+            do just mirroring (if 2 places -> 1 of them has the data, the other = mirror)
+            if 3 places -> 2 have data, other = parity still, but only on 2 disks
+
+            *** this might work actually, just have to standardize this across the system
+            (can do this later, but BIG TODO)**
+
+    also need to fix that max_disk_count thing in database (it uses that sometimes 
+    for creating entries)
 */

@@ -198,6 +198,7 @@ func SaveFile(path string, username string, diskLocations []string, configs *typ
     size := fileStat.Size(); // in bytes
     fmt.Printf("Size of file: %d\n", size)
 
+    // NOTE: this could equivalently be just configs.DataDiskCount
     dataDiskCount := len(diskLocations) - configs.ParityDiskCount
     fmt.Printf("Data disk count: %d\n", dataDiskCount)
 
