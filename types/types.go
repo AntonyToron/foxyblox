@@ -62,7 +62,7 @@ type Config struct {
     Datadisks []string // slice containing all of the data disks available locally, including those for parity
     DataDiskCount int // default = 3, size of datadisks[] = datadiskcount + paritydiskcount
     ParityDiskCount int // default = 1 (RAID 4)
-}
+} // note: DataDiskCount defines the maximum amount of data drives you can distribute across (not including parity), can store on less
 
 // ALL TODOs:
 /*
@@ -139,4 +139,17 @@ type Config struct {
 
     also need to fix that max_disk_count thing in database (it uses that sometimes 
     for creating entries)
+
+    fix that and add tests for it in fileutils and also database (base it off how many 
+    places the file is stored at, not MAX_FILE_COUNT)
+
+    maybe the thing in configs is only going to be used for defining a maximum, but
+    most of the code should be defined solely based on the distribution given
+    by user (max is necessary to keep the database well defined***)
+
+    a property = more expensive to do less distributed, but more reliable (less
+    probability of one going down), but more distributed = cheaper but less
+    reliable the more you distribute across, which is why distribution across
+    4 places should be max, and AWS only can do all of the above, but it is
+    better to just do distribute across 4, good savings, and decent reliability
 */

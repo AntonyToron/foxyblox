@@ -76,11 +76,22 @@ func bufferToEntry(buf []byte, header *Header, configs *types.Config) (*types.Tr
     b = bytes.NewReader(buf[header.FileNameSize + types.POINTER_SIZE: header.FileNameSize + 2 * types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &currentNode.Right); check(err)
 
-    currentNode.Disks = make([]string, configs.DataDiskCount)
-    for i := 0; i < int(header.DiskCount); i++ {
+    // header disk count is inherited from configs file, and is more accurate to
+    // this file specifically
+    currentNode.Disks = make([]string, header.DiskCount)
+    i := 0
+    for i = 0; i < int(header.DiskCount); i++ {
         upperBound := int(header.FileNameSize) + 2 * int(types.POINTER_SIZE) + (i + 1) * int(header.DiskNameSize)
         lowerBound := int(header.FileNameSize) + 2 * int(types.POINTER_SIZE) + i * int(header.DiskNameSize)
         currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
+        if currentNode.Disks[i] == "" {
+            break
+        }
+    }
+
+    // trim the slice from empty entries (didn't use all of the distribution disk count)
+    if i != int(header.DiskCount) {
+        currentNode.Disks = currentNode.Disks[0:i]
     }
 
     return &currentNode
@@ -103,7 +114,8 @@ func getHeader(dbFile *os.File) (Header) {
 // get the database that this file is stored in
 func getDbFilenameForFile(filename string, username string, configs *types.Config) string {
     var dbFilename string = ""
-    if configs.DataDiskCount == 3 {
+    dbDiskCount := len(configs.Dbdisks) - 1
+    if dbDiskCount == 3 { // regular RAID 4
         if filename[0] >= 0 && filename[0] <= 85 {
             dbFilename = fmt.Sprintf("%s/%s_0", configs.Dbdisks[0], username)
         } else if filename[0] >= 86 && filename[0] <= 112 {
@@ -112,9 +124,9 @@ func getDbFilenameForFile(filename string, username string, configs *types.Confi
             dbFilename = fmt.Sprintf("%s/%s_2", configs.Dbdisks[2], username)
         }
     } else {
-        evenSplit := types.ASCII / configs.DataDiskCount // ASCII
+        evenSplit := types.ASCII / dbDiskCount // ASCII
         disk := int(filename[0]) / evenSplit // might break if not ASCII
-        if disk < 0 || disk > configs.DataDiskCount {
+        if disk < 0 || disk >= dbDiskCount {
             fmt.Printf("Weird character\n")
             disk = 0
         }
@@ -127,12 +139,12 @@ func getDbFilenameForFile(filename string, username string, configs *types.Confi
 // can store these in a config file (configured manually) and read from there
 // the first entry in the array is the database that this file will be stored on
 func getDbFilenames(username string, filename string, configs *types.Config) []string {
-    var dbFilenames []string = make([]string, configs.DataDiskCount)
+    var dbFilenames []string = make([]string, len(configs.Dbdisks) - 1)
 
     rootFilename := getDbFilenameForFile(filename, username, configs)
     dbFilenames[0] = rootFilename
     count := 1
-    for i := 0; i < configs.DataDiskCount; i++ {
+    for i := 0; i < len(configs.Dbdisks) - 1; i++ {
         dbFilename := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
         if dbFilename != rootFilename {
             dbFilenames[count] = dbFilename
@@ -258,7 +270,7 @@ func RemoveDatabaseStructure(diskLocations []string) {
     Removes all database files relating to this user
 */
 func DeleteDatabaseForUser(username string, configs *types.Config) {
-    for i := 0; i < configs.DataDiskCount; i++ {
+    for i := 0; i < len(configs.Dbdisks) - 1; i++ {
         // dbCompLocation := fmt.Sprintf("%s/%s_%d", dbdisklocations[i], username, i)
         dbCompLocation := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
 
@@ -281,7 +293,7 @@ func DeleteDatabaseForUser(username string, configs *types.Config) {
 // way of determining if there was an unexpected server crash in this function
 func CreateDatabaseForUser(username string, configs *types.Config) {
     parityBuf := make([]byte, types.HEADER_SIZE)
-    for i := 0; i < configs.DataDiskCount; i++ { //- NUM_PARITY_DISKS
+    for i := 0; i < len(configs.Dbdisks) - 1; i++ { //- NUM_PARITY_DISKS
         // dbCompLocation := fmt.Sprintf("%s/%s_%d", dbdisklocations[i], username, i)
         // can make configs.Dbdisks have paths within the disk too, not just
         // root of the disk (so that it looks nicer in some folder)
@@ -328,10 +340,12 @@ func CreateDatabaseForUser(username string, configs *types.Config) {
                 ^ might not need this though, can decrease later if possible
         */
 
-        // used to be MAX_DISK_COUNT
+        var SIZE_OF_ENTRY int16 = types.MAX_FILE_NAME_SIZE + 2*(types.POINTER_SIZE) + int16(configs.DataDiskCount + 1) * int16(types.MAX_DISK_NAME_SIZE)
+        // used to be MAX_DISK_COUNT, now takes the value from configs, and then
+        // is stored in the header for future use
         h := Header{types.MAX_FILE_NAME_SIZE, uint8(configs.DataDiskCount), types.MAX_DISK_NAME_SIZE, 
-                    types.HEADER_SIZE, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY),
-                    types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY)}
+                    types.HEADER_SIZE, types.HEADER_SIZE + int64(SIZE_OF_ENTRY),
+                    types.HEADER_SIZE + int64(SIZE_OF_ENTRY)}
 
         buf := new(bytes.Buffer)
         err = binary.Write(buf, binary.LittleEndian, &h)
@@ -395,7 +409,7 @@ func resizeAllDbDisks(username string, configs *types.Config) {
     dbParityFile.Close()
 
     // resize all of the other disks
-    for i := 0; i < configs.DataDiskCount; i++ {
+    for i := 0; i < len(configs.Dbdisks) - 1; i++ {
         dbFilename := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
 
         dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
@@ -465,6 +479,8 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     header := getHeader(dbFile)
     oldHeader := header
 
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+
     /*
         Tree entry: 
         [256 bytes for file name] [pointer to left child] 
@@ -472,7 +488,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     */
 
     // entry we want to insert
-    targetNode := make([]byte, types.SIZE_OF_ENTRY)
+    targetNode := make([]byte, SIZE_OF_ENTRY)
     for i := 0; i < len(filename); i++ {
         targetNode[i] = filename[i]
     }
@@ -497,7 +513,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
 
     foundInsertionPoint := false
     left := false
-    entryBuf := make([]byte, types.SIZE_OF_ENTRY)
+    entryBuf := make([]byte, SIZE_OF_ENTRY)
     for !foundInsertionPoint {
         // read in the current node
         dbFile.ReadAt(entryBuf, currentNodeLocation)
@@ -530,7 +546,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
         }
 
         if !foundInsertionPoint {
-            entryBuf = make([]byte, types.SIZE_OF_ENTRY)
+            entryBuf = make([]byte, SIZE_OF_ENTRY)
         }
     }
 
@@ -544,7 +560,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     // just another transaction action, and wehn you have to recover,
     // you just check if the parity disk is the same size as the largest
     // disk, if not then extend it after you replay the log
-    for (header.TrueDbSize + int64(types.SIZE_OF_ENTRY)) > sizeOfDbFile {
+    for (header.TrueDbSize + int64(SIZE_OF_ENTRY)) > sizeOfDbFile {
         // TODO: not sure if need to add resizing to transaction
         resizeAllDbDisks(username, configs)
 
@@ -564,7 +580,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
         offsetToPointer += types.POINTER_SIZE
     }
 
-    newData := make([]byte, types.SIZE_OF_ENTRY)
+    newData := make([]byte, SIZE_OF_ENTRY)
     for i := 0; i < len(entryBuf); i++ {
         newData[i] = entryBuf[i]
     }
@@ -577,12 +593,12 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     transaction.HandleActionError(errCode)
 
     // update the true size of the database (we are going to enter a new entry)
-    header.TrueDbSize += int64(types.SIZE_OF_ENTRY)
+    header.TrueDbSize += int64(SIZE_OF_ENTRY)
 
     // update free list to point to next entry in it
     // pointer to next in free list = first 8 bytes in the
     // entry in free list, if all 0s, then end of free list
-    insertionPointBuf := make([]byte, types.SIZE_OF_ENTRY) //types.POINTER_SIZE
+    insertionPointBuf := make([]byte, SIZE_OF_ENTRY) //types.POINTER_SIZE
     _, err = dbFile.ReadAt(insertionPointBuf, header.FreeList)
     check(err)
 
@@ -638,6 +654,7 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     check(err)
 
     header := getHeader(dbFile)
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
 
     /*
         Traverse the tree until you find a spot that you can insert the
@@ -654,7 +671,7 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     var currentNode *types.TreeEntry = nil
     for !foundFileOrLeaf {
         // read in the current node
-        buf := make([]byte, types.SIZE_OF_ENTRY)
+        buf := make([]byte, SIZE_OF_ENTRY)
         dbFile.ReadAt(buf, currentNodeLocation)
 
         currentNode = bufferToEntry(buf, &header, configs)
@@ -719,11 +736,12 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
     // currentNode := types.TreeEntry{"", 0, 0, nil}
     var currentNode *types.TreeEntry = nil
     var parentNodeLocation int64 = 0
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
 
     foundFileOrLeaf := false
     foundFile := false
     rightChild := false
-    currentNodeBuf := make([]byte, types.SIZE_OF_ENTRY)
+    currentNodeBuf := make([]byte, SIZE_OF_ENTRY)
     var parentNodeBuf []byte = nil
     for !foundFileOrLeaf {
         // read in the current node
@@ -757,7 +775,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
 
         if !foundFile {
             parentNodeBuf = currentNodeBuf
-            currentNodeBuf = make([]byte, types.SIZE_OF_ENTRY)
+            currentNodeBuf = make([]byte, SIZE_OF_ENTRY)
         }
     }
 
@@ -774,7 +792,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
         Update the free list pointer: prepend this space to the list
     */
 
-    newEntry := make([]byte, types.SIZE_OF_ENTRY)
+    newEntry := make([]byte, SIZE_OF_ENTRY)
     p := new(bytes.Buffer)
     err = binary.Write(p, binary.LittleEndian, &header.FreeList)
     check(err)
@@ -783,7 +801,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
         newEntry[i] = freeListPointer[i]
     }
 
-    oldEntry := make([]byte, types.SIZE_OF_ENTRY)
+    oldEntry := make([]byte, SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(oldEntry, currentNodeLocation)
     check(err)
 
@@ -835,11 +853,11 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
         var candidateParentLocation int64 = currentNodeLocation
         var candidateNode *types.TreeEntry = nil // &types.TreeEntry{"", 0, 0, []string(nil)}
         var foundLeftMost bool = false
-        candidateBuf := make([]byte, types.SIZE_OF_ENTRY)
+        candidateBuf := make([]byte, SIZE_OF_ENTRY)
         candidateParentBuf := currentNodeBuf
         for !foundLeftMost {
             // read in the current node
-            buf := make([]byte, types.SIZE_OF_ENTRY)
+            buf := make([]byte, SIZE_OF_ENTRY)
             _, err = dbFile.ReadAt(buf, candidateNodeLocation)
             check(err)
 
@@ -855,7 +873,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
 
             if !foundLeftMost {
                 candidateParentBuf = candidateBuf
-                candidateBuf = make([]byte, types.SIZE_OF_ENTRY)
+                candidateBuf = make([]byte, SIZE_OF_ENTRY)
             }
         }
 
@@ -937,7 +955,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
 
     // update the true size of the database (we removed an entry, so freed
     // up some space)
-    header.TrueDbSize -= int64(types.SIZE_OF_ENTRY)
+    header.TrueDbSize -= int64(SIZE_OF_ENTRY)
 
     // rewrite the header
     binaryBuffer := new(bytes.Buffer)
@@ -982,10 +1000,11 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
 
 func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []string, level int) {
     if entry != nil {
+        var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
         // fmt.Printf("%s\n", entry.Filename)
         arr[level] += entry.Filename + " "
         if entry.Left != 0 {
-            entryBuf := make([]byte, types.SIZE_OF_ENTRY)
+            entryBuf := make([]byte, SIZE_OF_ENTRY)
             _, err := dbFile.ReadAt(entryBuf, entry.Left)
             check(err)
             child := bufferToEntry(entryBuf, header, configs)
@@ -995,7 +1014,7 @@ func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []st
             printTree(nil, nil, nil, arr, level + 1)
         }
         if entry.Right != 0 {
-            entryBuf := make([]byte, types.SIZE_OF_ENTRY)
+            entryBuf := make([]byte, SIZE_OF_ENTRY)
             _, err := dbFile.ReadAt(entryBuf, entry.Right)
             check(err)
             child := bufferToEntry(entryBuf, header, configs)
@@ -1015,7 +1034,7 @@ func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []st
 }
 
 func PrettyPrintTree(username string, depth int, configs *types.Config) {
-    for i := 0; i < configs.DataDiskCount; i++ {
+    for i := 0; i < len(configs.Dbdisks) - 1; i++ {
         fmt.Printf("Pretty printing tree for disk %d:\n\n", i)
         // dbCompLocation := fmt.Sprintf("%s/%s_%d", dbdisklocations[i], username, i)
         dbFileName := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
@@ -1030,8 +1049,9 @@ func PrettyPrintTree(username string, depth int, configs *types.Config) {
         b := bytes.NewReader(headerBuf)
         err = binary.Read(b, binary.LittleEndian, &header)
         check(err)
+        var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
 
-        entryBuf := make([]byte, types.SIZE_OF_ENTRY)
+        entryBuf := make([]byte, SIZE_OF_ENTRY)
         _, err = dbFile.ReadAt(entryBuf, header.RootPointer)
         check(err)
 
@@ -1067,8 +1087,9 @@ func PrettyPrintTreeGetString(username string, disk int, depth int, configs *typ
     b := bytes.NewReader(headerBuf)
     err = binary.Read(b, binary.LittleEndian, &header)
     check(err)
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
 
-    entryBuf := make([]byte, types.SIZE_OF_ENTRY)
+    entryBuf := make([]byte, SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(entryBuf, header.RootPointer)
     check(err)
 
@@ -1080,7 +1101,6 @@ func PrettyPrintTreeGetString(username string, disk int, depth int, configs *typ
     }
 
     printTree(entry, &header, dbFile, arr, 0)
-
 
     dbFile.Close()
 

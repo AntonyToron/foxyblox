@@ -120,19 +120,19 @@ func removeDatabaseStructureLocal() {
     }
 }
 
-func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string) {
+func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string, username string) {
     // create sample file with random binary data
     testingFile, err := os.Create(testingFilename) // overwrite existing file if there
     if err != nil {
         t.Errorf("Could not create %d\n", testingFilename)
     }
 
-    username := "atoron"
-
     fileData := make([]byte, size)
     rand.Read(fileData)
 
     _, err = testingFile.WriteAt(fileData, 0)
+    check(err)
+    testingFile.Close()
 
     startTime := time.Now()
 
@@ -191,16 +191,17 @@ func testSavingCorrectnessHelper(t *testing.T, size int, testingFilename string)
 
     file.Close()
 
-    testingFilename = fmt.Sprintf("./%s", testingFilename)
-    os.Remove(testingFilename)
+    // testingFilename = fmt.Sprintf("./%s", testingFilename)
+    // os.Remove(testingFilename)
     // remove the file
     RemoveFile(testingFilename, username, diskLocations, configs)
 }
 
 func TestSavingCorrectnessVerySmallFile(t *testing.T) {
     testingFilename := "testingFileVerySmall.txt"
+    username := "atoron"
 
-    testSavingCorrectnessHelper(t, VERY_SMALL_FILE_SIZE, testingFilename)
+    testSavingCorrectnessHelper(t, VERY_SMALL_FILE_SIZE, testingFilename, username)
 }
 
 func TestSavingCorrectnessSmallFile(t *testing.T) {
@@ -209,8 +210,9 @@ func TestSavingCorrectnessSmallFile(t *testing.T) {
 
     // create sample file with random binary data
     testingFilename := "testingFile.txt"
+    username := "atoron"
 
-    testSavingCorrectnessHelper(t, SMALL_FILE_SIZE, testingFilename)
+    testSavingCorrectnessHelper(t, SMALL_FILE_SIZE, testingFilename, username)
 }
 
 func TestSavingCorrectnessLargeFile(t *testing.T) {
@@ -218,8 +220,9 @@ func TestSavingCorrectnessLargeFile(t *testing.T) {
 
     // create sample file with random binary data
     testingFilename := "testingFileLarge.txt"
+    username := "atoron"
 
-    testSavingCorrectnessHelper(t, int(LARGE_FILE_SIZE), testingFilename)
+    testSavingCorrectnessHelper(t, int(LARGE_FILE_SIZE), testingFilename, username)
 }
 
 func TestGettingFile(t *testing.T) {
@@ -269,10 +272,10 @@ func TestGettingFile(t *testing.T) {
         t.Errorf("Diff output was not empty")
     }
 
-    testingFilename = fmt.Sprintf("./%s", testingFilename)
-    os.Remove(testingFilename)
-    testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
-    os.Remove(testingFilename)
+    // testingFilename = fmt.Sprintf("./%s", testingFilename)
+    // os.Remove(testingFilename)
+    // testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
+    // os.Remove(testingFilename)
     // remove the file
     RemoveFile(testingFilename, username, diskLocations, configs)
 }
@@ -290,6 +293,8 @@ func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename s
     rand.Read(smallFileData)
 
     _, err = testingFile.WriteAt(smallFileData, 0)
+    check(err)
+    testingFile.Close()
 
     // call saveFile
     SaveFile(testingFilename, username, diskLocations, configs)
@@ -345,10 +350,10 @@ func testSimulatedDiskCorruptionHelper(t *testing.T, size int, testingFilename s
         t.Errorf("Diff output was not empty")
     }
 
-    testingFilename = fmt.Sprintf("./%s", testingFilename)
-    os.Remove(testingFilename)
-    testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
-    os.Remove(testingFilename)
+    // testingFilename = fmt.Sprintf("./%s", testingFilename)
+    // os.Remove(testingFilename)
+    // testingFilename = fmt.Sprintf("./downloaded-%s", testingFilename)
+    // os.Remove(testingFilename)
     // remove the file
     RemoveFile(testingFilename, username, diskLocations, configs)
 }
@@ -393,6 +398,8 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
     rand.Read(smallFileData)
 
     _, err = testingFile.WriteAt(smallFileData, 0)
+    check(err)
+    testingFile.Close()
 
     // call saveFile
     SaveFile(testingFilename, username, diskLocations, configs)
@@ -457,7 +464,8 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
     fmt.Printf("Going to check size %d bytes\n", size)
 
     fileBuffer := make([]byte, size)
-    file.ReadAt(fileBuffer, 0)
+    _, err = file.ReadAt(fileBuffer, 0)
+    check(err)
 
     for i := 0; i < int(size); i++ {
         if currentXOR[i] != fileBuffer[i] {
@@ -468,8 +476,8 @@ func TestSimulatedParityDiskCorruption(t *testing.T) {
 
     file.Close()
 
-    testingFilename = fmt.Sprintf("./%s", testingFilename)
-    os.Remove(testingFilename)
+    // testingFilename = fmt.Sprintf("./%s", testingFilename)
+    // os.Remove(testingFilename)
     // remove the file
     RemoveFile(testingFilename, username, diskLocations, configs)
 }
@@ -488,6 +496,9 @@ func TestRemoveFile(t *testing.T) {
     rand.Read(smallFileData)
 
     _, err = testingFile.WriteAt(smallFileData, 0)
+    check(err)
+
+    testingFile.Close()
 
     // call saveFile
     SaveFile(testingFilename, username, diskLocations, configs)
@@ -518,6 +529,98 @@ func TestRemoveFile(t *testing.T) {
     if _, err := os.Stat(parityfile); !(os.IsNotExist(err)) { // file does not exist
         t.Errorf("One of the components still exists (parity)")
     }
+}
+
+func TestAddFileToLessThanFourLocations(t *testing.T) {
+    // create sample file with random binary data
+    testingFilename := "testingFile.txt"
+    testingFile, err := os.Create(testingFilename) // overwrite existing file if there
+    if err != nil {
+        t.Errorf("Could not create %d\n", testingFilename)
+    }
+
+    fmt.Println("Starting TEST: Add file to less than four locations\n")
+
+    username := "atoron"
+
+    smallFileData := make([]byte, SMALL_FILE_SIZE)
+    rand.Read(smallFileData)
+
+    _, err = testingFile.WriteAt(smallFileData, 0)
+    check(err)
+
+    testingFile.Close()
+
+    for i := 2; i < TESTING_DISK_COUNT + 1; i++ {
+        // call saveFile
+        SaveFile(testingFilename, username, diskLocations[0:i], configs)
+
+        // check that the files are there in the first place
+        smallerLocations := diskLocations[0:i]
+        for j := 0; j < len(smallerLocations) - 1; j++ {
+            stripFile := fmt.Sprintf("%s/%s/%s_%d", smallerLocations[j], username, testingFilename, j)
+            if _, err := os.Stat(stripFile); (os.IsNotExist(err)) { // file does not exist
+                t.Errorf("One of the components does not exist")
+            }
+        }   
+        parityfile := fmt.Sprintf("%s/%s/%s_p", smallerLocations[len(smallerLocations) - 1], username, testingFilename)
+        if _, err := os.Stat(parityfile); (os.IsNotExist(err)) { // file does not exist
+            t.Errorf("One of the components does not exist (parity)")
+        }
+
+        // check that getting the file will yield the correct result
+        GetFile(testingFilename, username, smallerLocations, configs)
+        cmd := exec.Command("diff", testingFilename, "downloaded-" + testingFilename)
+
+        var out bytes.Buffer
+        var stderr bytes.Buffer
+        cmd.Stdout = &out
+        cmd.Stderr = &stderr
+        err = cmd.Run()
+        if err != nil {
+            fmt.Printf("Diff stderr: %q\n", stderr.String())
+            t.Errorf("Diff stderr not empty")
+        }
+
+        fmt.Printf("Diff stdout: %q\n", out.String())
+
+        if out.String() != "" {
+            t.Errorf("Diff output was not empty")
+        }
+
+        // remove the file
+        RemoveFile(testingFilename, username, smallerLocations, configs)
+
+        // files should no longer be there
+        for j := 0; j < len(smallerLocations) - 1; j++ {
+            stripFile := fmt.Sprintf("%s/%s/%s_%d", smallerLocations[j], username, testingFilename, j)
+            if _, err := os.Stat(stripFile); !(os.IsNotExist(err)) { // file does not exist
+                t.Errorf("One of the components still exists")
+            }
+        }   
+        parityfile = fmt.Sprintf("%s/%s/%s_p", smallerLocations[len(smallerLocations) - 1], username, testingFilename)
+        if _, err := os.Stat(parityfile); !(os.IsNotExist(err)) { // file does not exist
+            t.Errorf("One of the components still exists (parity)")
+        }
+    }
+
+    // os.Remove(testingFilename) above cleans up anyway (in TestMain)
+}
+
+func TestMultipleUsers(t *testing.T) {
+    testingFilename := "testingFile.txt"
+    username := "atoron"
+    username2 := "atoron2"
+
+    testSavingCorrectnessHelper(t, SMALL_FILE_SIZE, testingFilename, username)
+    testSavingCorrectnessHelper(t, SMALL_FILE_SIZE, testingFilename, username2)
+
+    // remove the file
+    RemoveFile(testingFilename, username, diskLocations, configs)
+
+    // remove the file
+    RemoveFile(testingFilename, username2, diskLocations, configs)
+
 }
 
 
