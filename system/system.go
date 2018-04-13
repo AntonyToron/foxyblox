@@ -14,9 +14,9 @@ import (
     "os"
     "log"
     // "math"
-    "os/exec"
-    "bytes"
-    "encoding/binary"
+    // "os/exec"
+    // "bytes"
+    // "encoding/binary"
     "foxyblox/database"
     "foxyblox/fileutils"
     "foxyblox/types"
@@ -46,20 +46,26 @@ func pathExists(path string) (bool) {
         dbdisks = ["storage/dbdrive<i>"] (default),
             ["/dev/sda1", "/dev/sda2", etc.] - should be 4 of them
 */
-func GetConfigs() *Config {
-    if !pathExists(CONFIG_FILE) {
+func GetConfigs() *types.Config {
+    if !pathExists(types.CONFIG_FILE) {
         // add default values, and return config object
-        configFile, err := os.OpenFile(CONFIG_FILE, os.O_RDWR | os.O_CREATE, 0755)
+        configFile, err := os.OpenFile(types.CONFIG_FILE, os.O_RDWR | os.O_CREATE, 0755)
         check(err)
 
-        dbDisks := make([]string, DBDISK_COUNT + DBDISK_PARITY_COUNT)
+        dbDisks := make([]string, types.DBDISK_COUNT + types.DBDISK_PARITY_COUNT)
         for i := 0; i < len(dbDisks); i++ { // parity disk in this already
-            dbDisks[i] = fmt.Sprintf(LOCALHOST_DBDISK, i)
+            dbDisks[i] = fmt.Sprintf(types.LOCALHOST_DBDISK, i)
         }
 
-        configs := &Config{Sys: LOCALHOST, Dbdisks: dbDisks, 
-                           DataDiskCount: DBDISK_COUNT, 
-                           ParityDiskCount: DBDISK_PARITY_COUNT}
+        diskLocations = make([]string, types.DISK_COUNT + types.NUM_PARITY_DISKS)
+        for i := 0; i < len(diskLocations); i++ {
+            diskLocations[i] = fmt.Sprintf(types.LOCALHOST_DATADISK, i)
+        }
+
+        configs := &types.Config{Sys: types.LOCALHOST, Dbdisks: dbDisks, 
+                           Datadisks: diskLocations,
+                           DataDiskCount: types.DBDISK_COUNT, 
+                           ParityDiskCount: types.DBDISK_PARITY_COUNT}
         obj, err := json.Marshal(configs)
         check(err)
 
@@ -72,7 +78,7 @@ func GetConfigs() *Config {
         configFile.Close()
     }
 
-    configFile, err := os.OpenFile(CONFIG_FILE, os.O_RDWR, 0755)
+    configFile, err := os.OpenFile(types.CONFIG_FILE, os.O_RDWR, 0755)
     check(err)
 
     fileStat, err := configFile.Stat(); check(err)
@@ -81,30 +87,31 @@ func GetConfigs() *Config {
     buf := make([]byte, sizeOfFile)
     _, err = configFile.ReadAt(buf, 0)
     check(err)
+    // fmt.Printf()
 
-    var configs *Config
-    err = json.Unmarshal(buf, configs)
+    var configs types.Config
+    err = json.Unmarshal(buf, &configs)
     check(err)
 
     configFile.Close()
 
-    return configs
+    return &configs
 }
 
 /*
     Manually sets the configs for the configuration file, overwrites the
     configurations that exist now, if there are any
 */
-func SetConfigs(newConfigs *Config) {
+func SetConfigs(newConfigs *types.Config) {
     // should re-create file and write into it if going to change the configs
     // add default values, and return config object
-    configFile, err := os.OpenFile(CONFIG_FILE, os.O_RDWR | os.O_CREATE, 0755)
+    configFile, err := os.OpenFile(types.CONFIG_FILE, os.O_RDWR | os.O_CREATE, 0755)
     check(err)
 
     configs, err := json.Marshal(newConfigs)
     check(err)
 
-    jsonString := string(obj)
+    jsonString := string(configs)
     jsonBytes := []byte(jsonString)
 
     _, err = configFile.WriteAt(jsonBytes, 0)
@@ -129,15 +136,48 @@ func AddFile(filename string, username string, diskLocations []string) {
     // should pass in username here, and save into a directory titled <username>
     // in each respective drive
 
-    fileutils.SaveFile(filename, username, diskLocations, configs.Sys)
+    // maybe better to add to database first, and then later groom the system
+    // to make sure that the database doesn't have unecessary entries? either
+    // is ok
+    fileutils.SaveFile(filename, username, diskLocations, configs)
 
     // add file to database (diskLocations = location that the file was stored at)
-    database.AddFileSpecsToDatabase(filename, username, diskLocations, configs.Sys)
+    database.AddFileSpecsToDatabase(filename, username, diskLocations, configs)
+
+    fmt.Printf("Added file %s to system, for user %s\n", filename, username)
 }
 
-func GetFile() {
+// returns the location at which the downloaded and assembled file is temporarily stored now
+func GetFile(filename string, username string) string {
+    // read configs from file
+    configs := GetConfigs()
 
     // first fetch where it is stored in database
+    entry := database.GetFileEntry(filename, username, configs)
+    if entry == nil {
+        return ""
+    }
 
     // get the actual file from those locations
+    downloadedTo := fileutils.GetFile(filename, username, entry.Disks, configs)
+
+    return downloadedTo
+}
+
+func DeleteFile(filename string, username string) *types.TreeEntry {
+    // read configs from file
+    configs := GetConfigs()   
+
+    // delete from database first
+    entry := database.DeleteFileEntry(filename, username, configs)
+    if entry == nil {
+        return nil
+    }
+
+    // now actually remove the saved file (if crash during this, can just
+    // occasionally skim the database and remove files that don't exist
+    // in the database from the system)
+    fileutils.RemoveFile(filename, username, entry.Disks, configs)
+
+    return entry
 }

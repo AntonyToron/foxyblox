@@ -78,9 +78,9 @@ func bufferToEntry(buf []byte, header *Header, configs *types.Config) (*types.Tr
 
     // header disk count is inherited from configs file, and is more accurate to
     // this file specifically
-    currentNode.Disks = make([]string, header.DiskCount)
+    currentNode.Disks = make([]string, header.DiskCount + 1) // + 1 for parity disk***
     i := 0
-    for i = 0; i < int(header.DiskCount); i++ {
+    for i = 0; i < int(header.DiskCount) + 1; i++ { // + 1 for parity disk***
         upperBound := int(header.FileNameSize) + 2 * int(types.POINTER_SIZE) + (i + 1) * int(header.DiskNameSize)
         lowerBound := int(header.FileNameSize) + 2 * int(types.POINTER_SIZE) + i * int(header.DiskNameSize)
         currentNode.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
@@ -710,9 +710,9 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     Fix the tree first, and then add that spot into the free list, return
     errorcode (0 = success, 1 = did not find file)
 */
-func DeleteFileEntry(filename string, username string, configs *types.Config) (int) {
+func DeleteFileEntry(filename string, username string, configs *types.Config) *types.TreeEntry {
     if !pathExists(configs.Dbdisks[0] + "/" + username + "_0") {
-        return 1
+        return nil
     }
 
     dbFilenames := getDbFilenames(username, filename, configs)
@@ -782,7 +782,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
     if !foundFile {
         fmt.Printf("Did not find the file\n")
         dbFile.Close()
-        return 1
+        return nil
     }
     
     /*
@@ -995,10 +995,10 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
 
     fmt.Printf("Successfully deleted node with filename %s\n", currentNode.Filename)
 
-    return 0 // success
+    return currentNode // success
 }
 
-func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []string, level int) {
+func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []string, level int, configs *types.Config) {
     if entry != nil {
         var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
         // fmt.Printf("%s\n", entry.Filename)
@@ -1009,9 +1009,9 @@ func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []st
             check(err)
             child := bufferToEntry(entryBuf, header, configs)
         
-            printTree(child, header, dbFile, arr, level + 1)
+            printTree(child, header, dbFile, arr, level + 1, configs)
         } else {
-            printTree(nil, nil, nil, arr, level + 1)
+            printTree(nil, nil, nil, arr, level + 1, configs)
         }
         if entry.Right != 0 {
             entryBuf := make([]byte, SIZE_OF_ENTRY)
@@ -1019,9 +1019,9 @@ func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []st
             check(err)
             child := bufferToEntry(entryBuf, header, configs)
 
-            printTree(child, header, dbFile, arr, level + 1)
+            printTree(child, header, dbFile, arr, level + 1, configs)
         } else {
-            printTree(nil, nil, nil, arr, level + 1)
+            printTree(nil, nil, nil, arr, level + 1, configs)
         }
 
         // fmt.Printf("\n")
@@ -1062,7 +1062,7 @@ func PrettyPrintTree(username string, depth int, configs *types.Config) {
             arr[i] = ""
         }
 
-        printTree(entry, &header, dbFile, arr, 0)
+        printTree(entry, &header, dbFile, arr, 0, configs)
         for i := 0; i < len(arr); i++ {
             fmt.Printf("%s\n", arr[i])
         }
@@ -1100,7 +1100,7 @@ func PrettyPrintTreeGetString(username string, disk int, depth int, configs *typ
         arr[i] = ""
     }
 
-    printTree(entry, &header, dbFile, arr, 0)
+    printTree(entry, &header, dbFile, arr, 0, configs)
 
     dbFile.Close()
 

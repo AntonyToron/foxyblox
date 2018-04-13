@@ -168,10 +168,11 @@ func SaveFile(path string, username string, diskLocations []string, configs *typ
     // if user does not have a defined structure, create folders for him in all
     // of the drives (maybe can do this in some sort of add user function)
     // or maybe just need to do this for the ones in diskLocations
-    for i := 0; i < len(dataDisks); i++ {
+    for i := 0; i < len(diskLocations); i++ { // maybe just do for diskLocations TODO
         // this won't work for all of the drives, since not all will have the
         // perfect local structure TODO
-        directory := fmt.Sprintf("%s/%s", dataDisks[i], username)
+        fmt.Printf("datadisk: %s\n", dataDisks[i])
+        directory := fmt.Sprintf("%s/%s", diskLocations[i], username)
         if !pathExists(directory) {
             os.Mkdir(directory, 0755)
         }
@@ -188,7 +189,6 @@ func SaveFile(path string, username string, diskLocations []string, configs *typ
         // check if not local, TODO: just assigning it to be equal for now
         localDiskLocations[i] = diskLocations[i]
     }
-
 
     filename := filepath.Base(path);
     fmt.Printf("Filename: %s, path = %s\n", filename, path)
@@ -658,6 +658,11 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         _, err = fixedFile.WriteAt(fixedHash, currentLocation)
         check(err)
 
+        for i := 0; i < len(otherDriveFiles); i++ {
+            otherDriveFiles[i].Close()
+        }
+        parityDriveFile.Close()
+
         /*
             File is fixed! Maybe should be fixing other files at the same time
             as fixing this one, or could just be realizing that later when you try
@@ -724,9 +729,14 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
         _, err = fixedFile.WriteAt(fixedHash, currentLocation)
         check(err)
+        for i := 0; i < len(otherDriveFiles); i++ {
+            otherDriveFiles[i].Close()
+        }
 
         // File is fixed!
     }
+
+    fixedFile.Close()
 
     // TODO: print some useful success message here
 }
@@ -838,7 +848,7 @@ func basicReaderWriter(filename string, outputFile *os.File,
     }
 
     if !hashesMatch {
-        completionChannel <- ID
+        completionChannel <- ID + 1 // to make sure ID is not 0, so that reads as error
         <- canRecoverChannel // wait until master says that this drive can recover
         fmt.Printf("This drive is messed up, ID = %d\n", ID)
         recoverFromDriveFailure(ID, file, filename, outputFile, 
@@ -932,8 +942,10 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
     diskLocations = where this file can be found
     configs = configs for the system (where the database is, RAID level, etc.)
 
+    returns the path to the downloaded file
+
 */
-func GetFile(filename string, username string, diskLocations []string, configs *types.Config) {
+func GetFile(filename string, username string, diskLocations []string, configs *types.Config) string {
     dataDiskCount := len(diskLocations) - configs.ParityDiskCount
 
     localDiskLocations := diskLocations
@@ -1024,6 +1036,8 @@ func GetFile(filename string, username string, diskLocations []string, configs *
     close(canRecoverChannel)
 
     fmt.Printf("Closed channels\n")
+
+    return downloadedFilename
 }
 
 /*

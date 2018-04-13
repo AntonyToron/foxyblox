@@ -364,7 +364,7 @@ func TestSimulatedDataDiskCorruption(t *testing.T) {
     // create sample file with random binary data
     testingFilename := "testingFile.txt"
     username := "atoron"
-    fileToCorrupt := fmt.Sprintf("./storage/drive1/%s/%s_1", username, testingFilename)
+    fileToCorrupt := fmt.Sprintf("./storage/drive0/%s/%s_0", username, testingFilename)
     testSimulatedDiskCorruptionHelper(t, SMALL_FILE_SIZE, testingFilename, fileToCorrupt)
 }
 

@@ -225,14 +225,15 @@ func addFileHelper(t *testing.T, filename string, username string,
         fmt.Printf("Length of filename is %d, should be %d\n", len(entry.Filename), len(filename))
     }
 
-    entry.Disks = make([]string, types.MAX_DISK_COUNT)
-    for i := 0; i < int(types.MAX_DISK_COUNT); i++ {
+    entry.Disks = make([]string, types.MAX_DISK_COUNT + 1) // + 1 for parity disk
+    for i := 0; i < int(types.MAX_DISK_COUNT) + 1; i++ {
         upperBound := int(types.MAX_FILE_NAME_SIZE) + 2 * int(types.POINTER_SIZE) + (i + 1) * int(types.MAX_DISK_NAME_SIZE)
         lowerBound := int(types.MAX_FILE_NAME_SIZE) + 2 * int(types.POINTER_SIZE) + i * int(types.MAX_DISK_NAME_SIZE)
         entry.Disks[i] = string(bytes.Trim(buf[lowerBound:upperBound], "\x00"))
         // shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
         if i < len(dataDisks) {
             shouldBe := dataDisks[i]
+            // fmt.Printf("Should be: %s, is %s\n", shouldBe, entry.Disks[i])
             if entry.Disks[i] != shouldBe {
                 t.Errorf("One of the disk locations is incorrect, it is %s", entry.Disks[i])
             }
@@ -455,7 +456,7 @@ func TestGettingFile(t *testing.T) {
         fmt.Printf("Length of filename is %d, should be %d\n", len(entry.Filename), len(filename))
     }
 
-    for i := 0; i < int(types.MAX_DISK_COUNT); i++ {
+    for i := 0; i < int(types.MAX_DISK_COUNT) + 1; i++ {
         // shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
         shouldBe := configs.Datadisks[i]
         if entry.Disks[i] != shouldBe {
@@ -479,7 +480,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
     // separate drives (will be simulated with separate folders)
     errCode := DeleteFileEntry(filename, username, configs)
 
-    if shouldFindTheFile && errCode != 0 {
+    if shouldFindTheFile && errCode == nil {
         t.Errorf("Error code is incorrect, should have found the file")
         return
     }
@@ -963,7 +964,7 @@ func TestOverallAddingGettingDeleting(t *testing.T) {
         // previousTree = currentTree
         // currentTree = PrettyPrintTreeGetString(LOCALHOST, username)
         currentTree = PrettyPrintTreeGetString(username, 0, amountOfFiles, configs)
-        if errCode != 0 {
+        if errCode == nil {
             t.Errorf("There was an error in deletion")
             fmt.Printf("Added %d, deleted %d\n", previousAddition, previousDeletion)
             fmt.Printf("Previous tree: \n")

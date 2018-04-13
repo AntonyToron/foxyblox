@@ -46,6 +46,7 @@ const BUFFER_SIZE = 8192
 // config-related constants
 const CONFIG_FILE = "config.txt"
 const LOCALHOST_DBDISK = "storage/dbdrive%d"
+const LOCALHOST_DATADISK = "storage/drive%d"
 const DBDISK_COUNT = 3 // not including parity db disk
 const DBDISK_PARITY_COUNT = 1
 
@@ -72,7 +73,9 @@ type Config struct {
     Datadisks []string // slice containing all of the data disks available locally, including those for parity
     DataDiskCount int // default = 3, size of datadisks[] = datadiskcount + paritydiskcount
     ParityDiskCount int // default = 1 (RAID 4)
-} // note: DataDiskCount defines the maximum amount of data drives you can distribute across (not including parity), can store on less
+} 
+// note: DataDiskCount defines the maximum amount of data drives you can distribute across (not including parity), can store on less
+// should be careful to add + 1 in a lot of places to include that parity disk name in the entries in database, etc.
 
 // ALL TODOs:
 /*
