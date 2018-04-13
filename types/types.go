@@ -49,6 +49,16 @@ const LOCALHOST_DBDISK = "storage/dbdrive%d"
 const DBDISK_COUNT = 3 // not including parity db disk
 const DBDISK_PARITY_COUNT = 1
 
+// transaction-related constants
+const INIT_ACTION_SIZE = 5
+const MAX_PATH_TO_DB = 256
+const RAW_WAL_HEADER = 1 + 1 + 1 + 2
+// const SIZE_OF_WAL_HEADER = 2 + MAX_FILE_NAME_SIZE * (MAX_DISK_COUNT + NUM_PARITY_DISKS)
+const READY = 0x00
+const COMMIT = 0xff
+const MAX_ENTRIES_TO_BUFFER = 10
+const SIZE_OF_WAL_ENTRY = SIZE_OF_ENTRY + POINTER_SIZE + POINTER_SIZE
+
 type TreeEntry struct {
     Filename string
     Left int64

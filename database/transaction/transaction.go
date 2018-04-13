@@ -24,25 +24,9 @@ import (
     "bytes"
     "encoding/binary"
     "path"
+    "foxyblox/types"
     // "time"
 )
-
-// from database
-const MAX_DISK_COUNT = 3;
-const MAX_FILE_NAME_SIZE = 256 // (in bytes), will only accept ASCII characters for now
-const MAX_DISK_NAME_SIZE = 128
-const NUM_PARITY_DISKS  = 1
-const POINTER_SIZE = 8
-const SIZE_OF_ENTRY = MAX_FILE_NAME_SIZE + 2*(POINTER_SIZE) + MAX_DISK_COUNT * MAX_DISK_NAME_SIZE
-
-
-const INIT_ACTION_SIZE = 5
-const MAX_PATH_TO_DB = 256
-const SIZE_OF_WAL_HEADER = 2 + MAX_FILE_NAME_SIZE * (MAX_DISK_COUNT + NUM_PARITY_DISKS)
-const READY = 0x00
-const COMMIT = 0xff
-const MAX_ENTRIES_TO_BUFFER = 10
-const SIZE_OF_WAL_ENTRY = SIZE_OF_ENTRY + POINTER_SIZE + POINTER_SIZE
 
 type Action struct {
     Location int64
@@ -56,6 +40,7 @@ type Transaction struct {
     Actions []*Action
     ActionAmount int
     WAL *os.File
+    Configs *types.Config
 }
 
 type LogEntry struct {
@@ -68,6 +53,8 @@ type LogEntry struct {
 type WALHeader struct {
     Status byte
     EntryCount byte
+    DbDiskCount byte
+    SizeOfEntry int16
     // NextEntry int64 <- just append, enter to end of the file
     DbFilenames []string // first one should be the disk this corresponds to, and last = parity disk
 }
@@ -80,37 +67,60 @@ func check(err error) {
 }
 
 // also needs the parity disk somehow, so can change it in commit
-func New(dbFilenames []string, dbParityFilename string) *Transaction {
+func New(dbFilenames []string, dbParityFilename string, configs *types.Config) *Transaction {
     // estimate that about 5 actions will happen per transaction, can expand
     // the array when it is full
-    actions := make([]*Action, INIT_ACTION_SIZE)
-    t := Transaction{dbFilenames, dbParityFilename, actions, 0, nil}
+    actions := make([]*Action, types.INIT_ACTION_SIZE)
+    t := Transaction{dbFilenames, dbParityFilename, actions, 0, nil, configs}
     return &t
 }
 
 func getWALHeader(logFile *os.File) WALHeader {
+    var SIZE_OF_WAL_HEADER int16 = types.RAW_WAL_HEADER //+  types.MAX_FILE_NAME_SIZE * int16(len(configs.Dbdisks))
+    
     buf := make([]byte, SIZE_OF_WAL_HEADER)
     _, err := logFile.ReadAt(buf, 0)
     check(err)
-    var filenames []string = make([]string, MAX_DISK_COUNT + NUM_PARITY_DISKS)
-    for i := 0; i < MAX_DISK_COUNT + NUM_PARITY_DISKS; i++ {
-        lowerBound := 2 + i * MAX_PATH_TO_DB
-        upperBound := lowerBound + MAX_PATH_TO_DB
-        filenames[i] = string(bytes.Trim(buf[lowerBound: upperBound], "\x00"))
+    diskAmount := buf[2]
+    dbdiskBuf := make([]byte, types.MAX_FILE_NAME_SIZE * int16(diskAmount))
+    _, err = logFile.ReadAt(dbdiskBuf, int64(SIZE_OF_WAL_HEADER))
+    check(err)
+
+    var filenames []string = make([]string, diskAmount)
+    for i := 0; i < int(diskAmount); i++ {
+        lowerBound := i * types.MAX_PATH_TO_DB // types.RAW_WAL_HEADER + 
+        upperBound := lowerBound + types.MAX_PATH_TO_DB
+        filenames[i] = string(bytes.Trim(dbdiskBuf[lowerBound: upperBound], "\x00"))
     }
 
-    header := WALHeader{buf[0], buf[1], filenames}
+    var sizeOfEntry int16
+    b := bytes.NewReader(buf[3:5])
+    err = binary.Read(b, binary.LittleEndian, &sizeOfEntry)
+    check(err)
+
+    header := WALHeader{buf[0], buf[1], buf[2], sizeOfEntry, filenames}
     return header
 }
 
-func headerToBuf(header WALHeader) []byte {
+func headerToBuf(header WALHeader, configs *types.Config) []byte {
+    var SIZE_OF_WAL_HEADER int16 = types.RAW_WAL_HEADER +  types.MAX_FILE_NAME_SIZE * int16(len(configs.Dbdisks))
     buf := make([]byte, SIZE_OF_WAL_HEADER)
     buf[0] = header.Status
     buf[1] = header.EntryCount
+    buf[2] = header.DbDiskCount
 
-    for i := 0; i < MAX_DISK_COUNT + NUM_PARITY_DISKS; i++ {
-        lowerBound := 2 +  i * MAX_PATH_TO_DB
-        if len(header.DbFilenames[i]) > MAX_PATH_TO_DB {
+    // now the size of the entry
+    bb := new(bytes.Buffer)
+    err := binary.Write(bb, binary.LittleEndian, &header.SizeOfEntry)
+    check(err)
+
+    sizeOfEntryBuf := bb.Bytes()
+    buf[3] = sizeOfEntryBuf[0]
+    buf[4] = sizeOfEntryBuf[1]
+
+    for i := 0; i < len(header.DbFilenames); i++ {
+        lowerBound := types.RAW_WAL_HEADER +  i * types.MAX_PATH_TO_DB
+        if len(header.DbFilenames[i]) > types.MAX_PATH_TO_DB {
             log.Fatal("Length of path to database is too long in headerToBuf")
         }
         for j := 0; j < len(header.DbFilenames[i]); j++ {
@@ -123,10 +133,10 @@ func headerToBuf(header WALHeader) []byte {
 
 func bufToEntry(buf []byte) LogEntry {
     // first location (8 bytes), then 8 byte size, then new data
-    location := bufToPointer(buf[0:POINTER_SIZE])
-    size := bufToPointer(buf[POINTER_SIZE:2*POINTER_SIZE])
+    location := bufToPointer(buf[0:types.POINTER_SIZE])
+    size := bufToPointer(buf[types.POINTER_SIZE:2*types.POINTER_SIZE])
     
-    entry := LogEntry{location, size, buf[2*POINTER_SIZE:len(buf)]}
+    entry := LogEntry{location, size, buf[2*types.POINTER_SIZE:len(buf)]}
     return entry
 }
 
@@ -183,13 +193,17 @@ func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) i
             create short header for WAL file:
                 1 byte (all 1s when ready/committed) to indicate status of log
                 1 byte = amount of actions
+                2 bytes = size of an entry in this file
                 16 - (previous) extra bytes of 0s just in case need to add something later
         */
-        header := WALHeader{0, 0, append(t.DbFilenames, t.DbParityFilename)}
-        headerBuf := headerToBuf(header)
+        var SIZE_OF_ENTRY int16 = types.MAX_FILE_NAME_SIZE + 2*(types.POINTER_SIZE) + int16(t.Configs.DataDiskCount + 1) * int16(types.MAX_DISK_NAME_SIZE)
+        header := WALHeader{0, 0, byte(len(t.Configs.Dbdisks)), SIZE_OF_ENTRY, append(t.DbFilenames, t.DbParityFilename)}
+        headerBuf := headerToBuf(header, t.Configs)
     
+        var SIZE_OF_WAL_HEADER int16 = types.RAW_WAL_HEADER +  types.MAX_FILE_NAME_SIZE * int16(len(t.Configs.Dbdisks))
+
         // append remaining zeroes
-        headerBuf = append(headerBuf, make([]byte, SIZE_OF_WAL_HEADER - len(headerBuf))...)
+        headerBuf = append(headerBuf, make([]byte, SIZE_OF_WAL_HEADER - int16(len(headerBuf)))...)
         _, err = log.WriteAt(headerBuf, 0)
         check(err)
     }
@@ -226,7 +240,7 @@ func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) i
     header.EntryCount += 1
 
     // update the header
-    newHeader := headerToBuf(header)
+    newHeader := headerToBuf(header, t.Configs)
     _, err = t.WAL.WriteAt(newHeader, 0)
     check(err)
 
@@ -239,8 +253,8 @@ func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) i
 func Commit(t *Transaction) {
     // mark the header in COMMIT state
     previousHeader := getWALHeader(t.WAL)
-    previousHeader.Status = COMMIT
-    commitHeader := headerToBuf(previousHeader)
+    previousHeader.Status = types.COMMIT
+    commitHeader := headerToBuf(previousHeader, t.Configs)
     _, err := t.WAL.WriteAt(commitHeader, 0)
     check(err)
 
@@ -306,7 +320,7 @@ func ReplayLog(logName string) {
     // check if the header is well-formed, otherwise the log was not
     // committed yet
     header := getWALHeader(log)
-    if header.Status != COMMIT {
+    if header.Status != types.COMMIT {
         log.Close()
         os.Remove(logName)
         return
@@ -314,17 +328,20 @@ func ReplayLog(logName string) {
 
     dbFile, err := os.OpenFile(header.DbFilenames[0], os.O_RDWR, 0755)
     check(err)
-    dbParityFile, err := os.OpenFile(header.DbFilenames[MAX_DISK_COUNT + NUM_PARITY_DISKS - 1], os.O_RDWR, 0755)
+    dbParityFile, err := os.OpenFile(header.DbFilenames[len(header.DbFilenames) - 1], os.O_RDWR, 0755)
     check(err)
+
+    var SIZE_OF_WAL_HEADER int16 = types.RAW_WAL_HEADER +  types.MAX_FILE_NAME_SIZE * int16(len(header.DbFilenames))
+    var SIZE_OF_ENTRY int = int(header.SizeOfEntry)
     currentPosition := int64(SIZE_OF_WAL_HEADER)
     for i := 0; i < int(header.EntryCount); i++ {
         // read in the location and size of the next component
-        buf := make([]byte, 2*POINTER_SIZE)
+        buf := make([]byte, 2*types.POINTER_SIZE)
         _, err = log.ReadAt(buf, currentPosition)
         check(err)
-        location := bufToPointer(buf[0:POINTER_SIZE])
-        size := bufToPointer(buf[POINTER_SIZE:2*POINTER_SIZE])
-        currentPosition += 2*POINTER_SIZE
+        location := bufToPointer(buf[0:types.POINTER_SIZE])
+        size := bufToPointer(buf[types.POINTER_SIZE:2*types.POINTER_SIZE])
+        currentPosition += 2*types.POINTER_SIZE
 
         // read in the actual data
         buf = make([]byte, size)
@@ -340,7 +357,7 @@ func ReplayLog(logName string) {
 
         // recompute parity disk at this location
         parityBuf := entry.NewData
-        for j := 1; j < MAX_DISK_COUNT; j++ {
+        for j := 1; j < len(header.DbFilenames); j++ {
             // filename = path in this case
             otherDb, err := os.Open(header.DbFilenames[j])
             check(err)
@@ -348,7 +365,7 @@ func ReplayLog(logName string) {
             otherDbBuf := make([]byte, SIZE_OF_ENTRY)
             fileStat, err := otherDb.Stat(); check(err)
             sizeOfDb := fileStat.Size()
-            if entry.Location + SIZE_OF_ENTRY < sizeOfDb {
+            if entry.Location + int64(SIZE_OF_ENTRY) < sizeOfDb {
                 // if read was out of bounds of the file, then must have been in the
                 // middle of resizing the databases, so should just assume it to be 0
 
@@ -383,7 +400,7 @@ func ReplayLog(logName string) {
     // clean up
     dbFile.Close()
     dbParityFile.Close()
-    for i := 1; i < MAX_DISK_COUNT; i++ {
+    for i := 1; i < len(header.DbFilenames); i++ {
         // filename = path in this case
         otherDb, err := os.Open(header.DbFilenames[i])
         check(err)

@@ -468,7 +468,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     /*
         Begin transaction
     */
-    t := transaction.New(dbFilenames, dbParityFilename)
+    t := transaction.New(dbFilenames, dbParityFilename, configs)
 
     // read in the database file and get root of the tree
     dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
@@ -722,7 +722,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) (i
     /*
         Begin transaction
     */
-    t := transaction.New(dbFilenames, dbParityFilename)
+    t := transaction.New(dbFilenames, dbParityFilename, configs)
 
     // read in the database file and get root of the tree
     dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
