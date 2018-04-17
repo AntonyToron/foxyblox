@@ -172,6 +172,20 @@ func getHeader(dbFile *os.File) (Header) {
     err = binary.Read(b, binary.LittleEndian, &header)
     check(err)
 
+    // check the hash on the header here, recover if not correct
+    headerHash := md5.New()
+    sizeOfRawHeader := binary.Size(header)
+    headerHash.Write(buf[0:sizeOfRawHeader])
+    computedHeaderHash := headerHash.Sum(nil)
+
+    originalHash := buf[sizeOfRawHeader:sizeOfRawHeader + types.MD5_SIZE]
+    for i := 0; i < types.MD5_SIZE; i++ {
+        if originalHash[i] != computedHeaderHash[i] {
+            log.Fatal("Error in header")
+            // fmt.Printf("Error in header\n")
+        }
+    }
+
     return header
 }
 
@@ -415,9 +429,15 @@ func CreateDatabaseForUser(username string, configs *types.Config) {
         err = binary.Write(buf, binary.LittleEndian, &h)
         check(err)
 
-        // TODO: add hash on the header
-
         header := buf.Bytes()
+
+        // TODO: add hash on the header
+        headerHash := md5.New()
+        headerHash.Write(header)
+        computedHeaderHash := headerHash.Sum(nil)
+
+        // append it to the end of the raw header
+        header = append(header, computedHeaderHash...)
 
         // zero bytes
         zeroes := make([]byte, types.HEADER_SIZE - int64(len(header)))
@@ -513,6 +533,8 @@ func resizeAllDbDisks(username string, configs *types.Config) {
 func recoverFromDbDiskFailure(dbFilename string, nodeLocation int64) {
     fmt.Printf("Detected an error in drive: %s, location: %d\n", dbFilename, nodeLocation)
     log.Fatal("Didn't recover")
+
+    // TODO: maybe need to add the recovery as part of the transaction log (can do this later)
 
 }
 
@@ -697,7 +719,6 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     _, err = dbFile.ReadAt(insertionPointBuf, header.FreeList)
     check(err)
 
-    // TODO, SHOULD PUT HASH ON FREE LIST ENTRIES, AND CHECK IT HERE
     // don't verify the pointer if it is to the end of the file (no entry
     // there to check)
     if header.FreeList != (header.TrueDbSize - int64(SIZE_OF_ENTRY)) {
@@ -740,6 +761,17 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     errCode = transaction.AddAction(t, oldHeaderBuf, newHeaderBuf, 0)
     transaction.HandleActionError(errCode)
 
+    // update the hash of the header
+    oldHash := md5.New()
+    oldHash.Write(oldHeaderBuf)
+    computedOldHash := oldHash.Sum(nil)
+
+    newHash := md5.New()
+    newHash.Write(newHeaderBuf)
+    computedNewHash := newHash.Sum(nil)
+
+    errCode = transaction.AddAction(t, computedOldHash, computedNewHash, int64(len(newHeaderBuf)))
+    transaction.HandleActionError(errCode)
 
     dbFile.Close()
     transaction.Commit(t)
@@ -961,8 +993,6 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         errCode = transaction.AddAction(t, parentNodeBuf, newEntry, parentNodeLocation)
         transaction.HandleActionError(errCode)
 
-        fmt.Println("Delete option 1")
-
     } else if currentNode.Left == 0 || currentNode.Right == 0 {
         childLocation := currentNode.Left
         if currentNode.Left == 0 {
@@ -978,12 +1008,9 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
         errCode = transaction.AddAction(t, parentNodeBuf, newEntry, parentNodeLocation)
         transaction.HandleActionError(errCode)
-
-        fmt.Println("Delete option 2")
         
     } else {
         // find leftmost node in right subtree
-        fmt.Println("Delete option 3")
         var candidateNodeLocation int64 = currentNode.Right
         var candidateParentLocation int64 = currentNodeLocation
         var candidateNode *types.TreeEntry = nil // &types.TreeEntry{"", 0, 0, []string(nil)}
@@ -999,7 +1026,6 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
             candidateNode = bufferToEntry(candidateBuf, &header, configs)
 
             if candidateNode == nil {
-                fmt.Println("Error in has in candidate node")
                 recoverFromDbDiskFailure(dbFilename, candidateNodeLocation)
             }
             
@@ -1123,6 +1149,18 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     oldHeaderBuf := x.Bytes()
 
     errCode = transaction.AddAction(t, oldHeaderBuf, newHeaderBuf, 0)
+    transaction.HandleActionError(errCode)
+
+    // update the hash of the header
+    oldHash := md5.New()
+    oldHash.Write(oldHeaderBuf)
+    computedOldHash := oldHash.Sum(nil)
+
+    newHash := md5.New()
+    newHash.Write(newHeaderBuf)
+    computedNewHash := newHash.Sum(nil)
+
+    errCode = transaction.AddAction(t, computedOldHash, computedNewHash, int64(len(newHeaderBuf)))
     transaction.HandleActionError(errCode)
 
     // update the parity file to reflect the changes to both the header and

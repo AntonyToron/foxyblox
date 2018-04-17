@@ -26,6 +26,7 @@ const MD5_SIZE = md5.Size;
 const DISK_COUNT int = 3;
 const MAX_DISK_COUNT uint8 = 3;
 const REGULAR_FILE_MODE os.FileMode = 0755; // owner can rwx, but everyone else rx but not w
+const RAW_HEADER_SIZE int64 = 2 + 1 + 1 + 8 + 8 + 8
 const HEADER_SIZE int64 = 64;
 const MAX_FILE_NAME_SIZE int16 = 256 // (in bytes), will only accept ASCII characters for now
 const MAX_DISK_NAME_SIZE uint8 = 128
