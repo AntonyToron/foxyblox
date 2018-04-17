@@ -196,7 +196,7 @@ func AddAction(t *Transaction, oldData []byte, newData []byte, location int64) i
                 2 bytes = size of an entry in this file
                 16 - (previous) extra bytes of 0s just in case need to add something later
         */
-        var SIZE_OF_ENTRY int16 = types.MAX_FILE_NAME_SIZE + 2*(types.POINTER_SIZE) + int16(t.Configs.DataDiskCount + 1) * int16(types.MAX_DISK_NAME_SIZE)
+        var SIZE_OF_ENTRY int16 = types.MAX_FILE_NAME_SIZE + 2*(types.POINTER_SIZE) + int16(t.Configs.DataDiskCount + 1) * int16(types.MAX_DISK_NAME_SIZE) + types.MD5_SIZE
         header := WALHeader{0, 0, byte(len(t.Configs.Dbdisks)), SIZE_OF_ENTRY, append(t.DbFilenames, t.DbParityFilename)}
         headerBuf := headerToBuf(header, t.Configs)
     

@@ -33,7 +33,7 @@ const NUM_PARITY_DISKS  = 1
 const POINTER_SIZE = 8
 
 // have to add 1 because parity disk also needs to be stored!
-const SIZE_OF_ENTRY = MAX_FILE_NAME_SIZE + 2*(POINTER_SIZE) + int16(MAX_DISK_COUNT + 1) * int16(MAX_DISK_NAME_SIZE)
+const SIZE_OF_ENTRY = MAX_FILE_NAME_SIZE + 2*(POINTER_SIZE) + int16(MAX_DISK_COUNT + 1) * int16(MAX_DISK_NAME_SIZE) + MD5_SIZE
 const ASCII = 255
 
 // entries in header
@@ -65,6 +65,7 @@ type TreeEntry struct {
     Left int64
     Right int64
     Disks []string
+    Hash []byte // md5 hash of the contents before this in the entry
 }
 
 type Config struct {

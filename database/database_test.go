@@ -18,6 +18,7 @@ import (
     "encoding/binary"
     // "os/exec"
     "time"
+    "log"
     "foxyblox/types"
 )
 
@@ -137,7 +138,7 @@ func TestDatabaseCreationAndRemoval(t *testing.T) {
 
         fileStat, err := dbFile.Stat(); check(err);
         sizeOfDbFile := fileStat.Size(); // in bytes
-        if sizeOfDbFile != types.HEADER_SIZE {
+        if sizeOfDbFile != types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY) { // add size of entry for root node
             t.Errorf("Incorrect database file size")
         }
 
@@ -212,7 +213,7 @@ func addFileHelper(t *testing.T, filename string, username string,
     check(err)
 
     entryFilename := bytes.Trim(buf[0:types.MAX_FILE_NAME_SIZE], "\x00")
-    entry := types.TreeEntry{string(entryFilename), 0, 0, []string(nil)}
+    entry := types.TreeEntry{string(entryFilename), 0, 0, []string(nil), nil}
 
     b := bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE: types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Left); check(err)
@@ -253,8 +254,7 @@ func addFileHelper(t *testing.T, filename string, username string,
     _, err = dbFile.ReadAt(buf, parentShouldBeAt)
     check(err)
 
-    entry = types.TreeEntry{string(buf[0:types.MAX_FILE_NAME_SIZE]), 0, 0, []string(nil)}
-
+    entry = types.TreeEntry{string(buf[0:types.MAX_FILE_NAME_SIZE]), 0, 0, []string(nil), nil}
     b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE: types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE])
     err = binary.Read(b, binary.LittleEndian, &entry.Left); check(err)
     b = bytes.NewReader(buf[types.MAX_FILE_NAME_SIZE + types.POINTER_SIZE: types.MAX_FILE_NAME_SIZE + 2 * types.POINTER_SIZE])
@@ -509,7 +509,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
     check(err)
 
     entryFilename := bytes.Trim(buf[0:types.MAX_FILE_NAME_SIZE], "\x00")
-    entry := types.TreeEntry{string(entryFilename), 0, 0, []string(nil)}
+    entry := types.TreeEntry{string(entryFilename), 0, 0, []string(nil), nil}
 
     if entry.Filename == filename {
         t.Errorf("Parent has same filename as deleted node for some reason")
@@ -589,6 +589,7 @@ func deleteFileHelper(t *testing.T, filename string, username string,
         if parityBuf[i] != testBuf[i] {
             t.Errorf("Incorrect XOR at location %d\n", i)
             fmt.Printf("Parity = %x, should be %x\n", parityBuf[i], testBuf[i])
+            log.Fatal("broken")
             break
         }
     }
@@ -803,6 +804,7 @@ func TestDeletingMultipleFiles(t *testing.T) {
             types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY), types.HEADER_SIZE + 6*int64(types.SIZE_OF_ENTRY),
             types.HEADER_SIZE + 4*int64(types.SIZE_OF_ENTRY), true, types.HEADER_SIZE + 3*int64(types.SIZE_OF_ENTRY),
             6, 2)
+
 
     /*
         Looks like this now:

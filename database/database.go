@@ -29,6 +29,7 @@ import (
     "os"
     "log"
     // "math"
+    "crypto/md5"
     "os/exec"
     "bytes"
     "encoding/binary"
@@ -69,7 +70,18 @@ func pathExists(path string) (bool) {
 // return a tree entry corresponding to the read buffer
 func bufferToEntry(buf []byte, header *Header, configs *types.Config) (*types.TreeEntry) {
     currentFilename := bytes.Trim(buf[0:header.FileNameSize], "\x00")
-    currentNode := types.TreeEntry{string(currentFilename), 0, 0, []string(nil)}
+    currentNode := types.TreeEntry{string(currentFilename), 0, 0, []string(nil), nil}
+    // if (string(currentFilename) == "") {
+    //     fmt.Printf("Why is it empty\n\n\n\n")
+    // } else {
+    //     fmt.Printf("Got %s\n", string(currentFilename))
+    // }
+
+    // if len(buf) != int(types.SIZE_OF_ENTRY) {
+    //     fmt.Println("\n\n\n\n\n wrong size \n\n\n\n\n")
+    //     log.Fatal("different size")
+    // }
+
 
     b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + types.POINTER_SIZE])
     err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
@@ -94,7 +106,59 @@ func bufferToEntry(buf []byte, header *Header, configs *types.Config) (*types.Tr
         currentNode.Disks = currentNode.Disks[0:i]
     }
 
+    // get the hash at the end, and verify it, return nil if something went wrong
+    originalHash := buf[len(buf) - types.MD5_SIZE:len(buf)]
+    h := md5.New()
+    h.Write(buf[0:len(buf) - types.MD5_SIZE])
+    computedHash := h.Sum(nil)
+    currentNode.Hash = make([]byte, types.MD5_SIZE)
+    for i := 0; i < len(originalHash); i++ {
+        currentNode.Hash[i] = originalHash[i]
+        if computedHash[i] != originalHash[i] {
+            // error in hash recomputation!, this disk is messed up
+            // fmt.Printf("Found an error in a hash, original = %d, computed = %d\n", originalHash[i], computedHash[i])s
+            return nil
+        }
+    }
+
     return &currentNode
+}
+
+// returns the newly modified entry, with updated hash
+func modifyEntry(oldEntry []byte, newData []byte, locationOfChange int) []byte {
+    newEntry := make([]byte, len(oldEntry))
+    for i := 0; i < len(oldEntry); i++ {
+        newEntry[i] = oldEntry[i]
+    }
+    for i := 0; i < len(newData); i++ {
+        newEntry[locationOfChange + i] = newData[i]
+    }
+
+    // compute the hash for this modified parent entry
+    h := md5.New()
+    h.Write(newEntry[0:len(oldEntry) - types.MD5_SIZE])
+    newHash := h.Sum(nil)
+    for i := 0; i < types.MD5_SIZE; i++ {
+        newEntry[len(newEntry) - types.MD5_SIZE + i] = newHash[i]
+    }
+
+    return newEntry
+}
+
+func verifyFreeListEntry(freeListEntryBuf []byte) []byte {
+    // compute the hash for this modified parent entry
+    h := md5.New()
+    h.Write(freeListEntryBuf[0:len(freeListEntryBuf) - types.MD5_SIZE])
+    newHash := h.Sum(nil)
+    oldHash := freeListEntryBuf[len(freeListEntryBuf) - types.MD5_SIZE: len(freeListEntryBuf)]
+    for i := 0; i < types.MD5_SIZE; i++ {
+        if newHash[i] != oldHash[i] {
+            fmt.Printf("Found an error in free list entry\n")
+            return nil
+        }
+    }
+
+    return freeListEntryBuf
 }
 
 // get the header in this dbFile
@@ -292,7 +356,8 @@ func DeleteDatabaseForUser(username string, configs *types.Config) {
 // of the files even exist yet. This can be updated later to have a more robust
 // way of determining if there was an unexpected server crash in this function
 func CreateDatabaseForUser(username string, configs *types.Config) {
-    parityBuf := make([]byte, types.HEADER_SIZE)
+    var SIZE_OF_ENTRY int16 = types.MAX_FILE_NAME_SIZE + 2*(types.POINTER_SIZE) + int16(configs.DataDiskCount + 1) * int16(types.MAX_DISK_NAME_SIZE) + types.MD5_SIZE
+    parityBuf := make([]byte, types.HEADER_SIZE + int64(SIZE_OF_ENTRY))
     for i := 0; i < len(configs.Dbdisks) - 1; i++ { //- NUM_PARITY_DISKS
         // dbCompLocation := fmt.Sprintf("%s/%s_%d", dbdisklocations[i], username, i)
         // can make configs.Dbdisks have paths within the disk too, not just
@@ -340,7 +405,6 @@ func CreateDatabaseForUser(username string, configs *types.Config) {
                 ^ might not need this though, can decrease later if possible
         */
 
-        var SIZE_OF_ENTRY int16 = types.MAX_FILE_NAME_SIZE + 2*(types.POINTER_SIZE) + int16(configs.DataDiskCount + 1) * int16(types.MAX_DISK_NAME_SIZE)
         // used to be MAX_DISK_COUNT, now takes the value from configs, and then
         // is stored in the header for future use
         h := Header{types.MAX_FILE_NAME_SIZE, uint8(configs.DataDiskCount), types.MAX_DISK_NAME_SIZE, 
@@ -350,6 +414,8 @@ func CreateDatabaseForUser(username string, configs *types.Config) {
         buf := new(bytes.Buffer)
         err = binary.Write(buf, binary.LittleEndian, &h)
         check(err)
+
+        // TODO: add hash on the header
 
         header := buf.Bytes()
 
@@ -361,9 +427,22 @@ func CreateDatabaseForUser(username string, configs *types.Config) {
         _, err = dbFile.WriteAt(header, 0)
         check(err)
 
-        for j := 0; j < len(parityBuf); j++ {
+        for j := 0; j < len(header); j++ {
             parityBuf[j] ^= header[j]
         }
+
+        // put in the the hash for the root node: hash of all zeroes of length entrysize - md5_size
+        hash := md5.New()
+        root := make([]byte, SIZE_OF_ENTRY - types.MD5_SIZE)
+        hash.Write(root)
+        rootHash := hash.Sum(nil)
+        _, err = dbFile.WriteAt(rootHash, types.HEADER_SIZE + int64(SIZE_OF_ENTRY) - types.MD5_SIZE)
+        check(err)
+
+        for j := 0; j < len(rootHash); j++ {
+            parityBuf[types.HEADER_SIZE + int64(SIZE_OF_ENTRY) - types.MD5_SIZE + int64(j)] ^= rootHash[j]
+        }
+
 
         dbFile.Close()
     }
@@ -431,6 +510,12 @@ func resizeAllDbDisks(username string, configs *types.Config) {
     fmt.Printf("Resized all of the disks\n")
 }
 
+func recoverFromDbDiskFailure(dbFilename string, nodeLocation int64) {
+    fmt.Printf("Detected an error in drive: %s, location: %d\n", dbFilename, nodeLocation)
+    log.Fatal("Didn't recover")
+
+}
+
 /*
     dbdisklocations = the disks that the file is spread out across
     padding file = second to last, parity file = last
@@ -479,7 +564,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     header := getHeader(dbFile)
     oldHeader := header
 
-    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
     /*
         Tree entry: 
@@ -499,7 +584,14 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             offset := int(header.FileNameSize) + 2 * types.POINTER_SIZE + i * int(header.DiskNameSize)
             targetNode[offset + j] = diskName[j]
         }
-    }        
+    }
+    // write the hash into the end of the entry
+    h := md5.New()
+    h.Write(targetNode[0:SIZE_OF_ENTRY - types.MD5_SIZE])        
+    targetNodeHash := h.Sum(nil)
+    for i := int64(0); i < types.MD5_SIZE; i++ {
+        targetNode[int64(SIZE_OF_ENTRY) - types.MD5_SIZE + i] = targetNodeHash[i]
+    }
 
     /*
         Traverse the tree until you find a spot that you can insert the
@@ -518,6 +610,15 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
         // read in the current node
         dbFile.ReadAt(entryBuf, currentNodeLocation)
         currentNode := bufferToEntry(entryBuf, &header, configs)
+
+        /*
+            Check if the currentNode had an error in reading (hash was
+            incorrect) -> fix this disk and re-write this entry to the location
+            where it was supposed to be
+        */
+        if currentNode == nil {
+            recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+        }
 
         // go left if < (if equals, doesn't make sense to keep going)
         if filename < currentNode.Filename {
@@ -580,16 +681,10 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
         offsetToPointer += types.POINTER_SIZE
     }
 
-    newData := make([]byte, SIZE_OF_ENTRY)
-    for i := 0; i < len(entryBuf); i++ {
-        newData[i] = entryBuf[i]
-    }
     newParentLink := binaryBuffer.Bytes()
-    for i := 0; i < len(newParentLink); i++ {
-        newData[offsetToPointer + i] = newParentLink[i]
-    }
+    newEntry := modifyEntry(entryBuf, newParentLink, offsetToPointer)
 
-    errCode := transaction.AddAction(t, entryBuf, newData, currentNodeLocation)
+    errCode := transaction.AddAction(t, entryBuf, newEntry, currentNodeLocation)
     transaction.HandleActionError(errCode)
 
     // update the true size of the database (we are going to enter a new entry)
@@ -602,9 +697,19 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     _, err = dbFile.ReadAt(insertionPointBuf, header.FreeList)
     check(err)
 
+    // TODO, SHOULD PUT HASH ON FREE LIST ENTRIES, AND CHECK IT HERE
+    // don't verify the pointer if it is to the end of the file (no entry
+    // there to check)
+    if header.FreeList != (header.TrueDbSize - int64(SIZE_OF_ENTRY)) {
+        freeListEntry := verifyFreeListEntry(insertionPointBuf)
+        if freeListEntry == nil {
+            recoverFromDbDiskFailure(dbFilename, header.FreeList)
+        }
+    }
+
     // check(err)
     var pointer int64 = 0
-    bufferReader := bytes.NewReader(insertionPointBuf)
+    bufferReader := bytes.NewReader(insertionPointBuf[0:types.POINTER_SIZE])
     err = binary.Read(bufferReader, binary.LittleEndian, &pointer)
     check(err)
 
@@ -624,6 +729,8 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     binaryBuffer = new(bytes.Buffer)
     err = binary.Write(binaryBuffer, binary.LittleEndian, &header)
     check(err)
+
+    // add the new hash of the header** TODO
 
     newHeaderBuf := binaryBuffer.Bytes() // get new header
 
@@ -654,7 +761,7 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     check(err)
 
     header := getHeader(dbFile)
-    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
     /*
         Traverse the tree until you find a spot that you can insert the
@@ -675,6 +782,14 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
         dbFile.ReadAt(buf, currentNodeLocation)
 
         currentNode = bufferToEntry(buf, &header, configs)
+        /*
+            Check if the currentNode had an error in reading (hash was
+            incorrect) -> fix this disk and re-write this entry to the location
+            where it was supposed to be
+        */
+        if currentNode == nil {
+            recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+        }
 
         // go left if < (if equals, doesn't make sense to keep going)
         if filename < currentNode.Filename {
@@ -736,7 +851,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     // currentNode := types.TreeEntry{"", 0, 0, nil}
     var currentNode *types.TreeEntry = nil
     var parentNodeLocation int64 = 0
-    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
     foundFileOrLeaf := false
     foundFile := false
@@ -749,6 +864,14 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         check(err)
 
         currentNode = bufferToEntry(currentNodeBuf, &header, configs)
+        /*
+            Check if the currentNode had an error in reading (hash was
+            incorrect) -> fix this disk and re-write this entry to the location
+            where it was supposed to be
+        */
+        if currentNode == nil {
+            recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+        }
 
         // go left if < (if equals, doesn't make sense to keep going)
         if filename < currentNode.Filename {
@@ -780,7 +903,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     }
 
     if !foundFile {
-        fmt.Printf("Did not find the file\n")
+        fmt.Printf("Did not find the file %s\n", filename)
         dbFile.Close()
         return nil
     }
@@ -792,20 +915,24 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         Update the free list pointer: prepend this space to the list
     */
 
-    newEntry := make([]byte, SIZE_OF_ENTRY)
+    zeroBuf := make([]byte, SIZE_OF_ENTRY)
     p := new(bytes.Buffer)
     err = binary.Write(p, binary.LittleEndian, &header.FreeList)
     check(err)
     freeListPointer := p.Bytes()
-    for i := 0; i < len(freeListPointer); i++ {
-        newEntry[i] = freeListPointer[i]
-    }
 
-    oldEntry := make([]byte, SIZE_OF_ENTRY)
-    _, err = dbFile.ReadAt(oldEntry, currentNodeLocation)
+    newEntry := modifyEntry(zeroBuf, freeListPointer, 0)
+    oldEntryBuf := make([]byte, SIZE_OF_ENTRY)
+    _, err = dbFile.ReadAt(oldEntryBuf, currentNodeLocation)
     check(err)
 
-    errCode := transaction.AddAction(t, oldEntry, newEntry, currentNodeLocation)
+    // do this just for the hash check
+    oldEntry := bufferToEntry(oldEntryBuf, &header, configs)
+    if oldEntry == nil {
+        recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+    }
+
+    errCode := transaction.AddAction(t, oldEntryBuf, newEntry, currentNodeLocation)
     transaction.HandleActionError(errCode)
 
     // update free list to point here now, since freed up memory
@@ -814,7 +941,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     // fix the tree
     // https://en.wikipedia.org/wiki/Binary_search_tree#Deletion
 
-    offsetInParent := header.FileNameSize
+    offsetInParent := int(header.FileNameSize)
     if rightChild {
         offsetInParent += types.POINTER_SIZE
     }
@@ -828,9 +955,13 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     if currentNode.Left == 0 && currentNode.Right == 0 {
         // remove from parent node's children
         buf := make([]byte, types.POINTER_SIZE)
-        errCode = transaction.AddAction(t, parentNodeBuf[offsetInParent:offsetInParent + types.POINTER_SIZE], 
-                                        buf, parentNodeLocation + int64(offsetInParent))
+
+        newEntry := modifyEntry(parentNodeBuf, buf, offsetInParent)
+
+        errCode = transaction.AddAction(t, parentNodeBuf, newEntry, parentNodeLocation)
         transaction.HandleActionError(errCode)
+
+        fmt.Println("Delete option 1")
 
     } else if currentNode.Left == 0 || currentNode.Right == 0 {
         childLocation := currentNode.Left
@@ -843,12 +974,16 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         check(err)
 
         newPointer := buf.Bytes()
-        errCode = transaction.AddAction(t, parentNodeBuf[offsetInParent:offsetInParent + types.POINTER_SIZE], 
-                                        newPointer, parentNodeLocation + int64(offsetInParent))
+        newEntry := modifyEntry(parentNodeBuf, newPointer, offsetInParent)
+
+        errCode = transaction.AddAction(t, parentNodeBuf, newEntry, parentNodeLocation)
         transaction.HandleActionError(errCode)
+
+        fmt.Println("Delete option 2")
         
     } else {
         // find leftmost node in right subtree
+        fmt.Println("Delete option 3")
         var candidateNodeLocation int64 = currentNode.Right
         var candidateParentLocation int64 = currentNodeLocation
         var candidateNode *types.TreeEntry = nil // &types.TreeEntry{"", 0, 0, []string(nil)}
@@ -857,11 +992,16 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         candidateParentBuf := currentNodeBuf
         for !foundLeftMost {
             // read in the current node
-            buf := make([]byte, SIZE_OF_ENTRY)
-            _, err = dbFile.ReadAt(buf, candidateNodeLocation)
+            candidateBuf = make([]byte, SIZE_OF_ENTRY)
+            _, err = dbFile.ReadAt(candidateBuf, candidateNodeLocation)
             check(err)
 
-            candidateNode = bufferToEntry(buf, &header, configs)
+            candidateNode = bufferToEntry(candidateBuf, &header, configs)
+
+            if candidateNode == nil {
+                fmt.Println("Error in has in candidate node")
+                recoverFromDbDiskFailure(dbFilename, candidateNodeLocation)
+            }
             
             // if doesn't have a left child, then it is the leftmost
             if candidateNode.Left == 0 {
@@ -877,24 +1017,30 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
             }
         }
 
-        // overwrite original node that is being deleted with candidate node (link its parent to this new node)
+        /*
+            overwrite original node that is being deleted with candidate node (link its parent to this new node)
+        */
         buf := new(bytes.Buffer)
         err = binary.Write(buf, binary.LittleEndian, &candidateNodeLocation)
         check(err)
         newPointer := buf.Bytes()
-        errCode = transaction.AddAction(t, parentNodeBuf[offsetInParent:offsetInParent + types.POINTER_SIZE], 
-                                        newPointer, parentNodeLocation + int64(offsetInParent))
+        newEntry := modifyEntry(parentNodeBuf, newPointer, offsetInParent)
+
+        errCode = transaction.AddAction(t, parentNodeBuf, newEntry, parentNodeLocation)
         transaction.HandleActionError(errCode)
 
-        // have the candidate node inherit the original node's links (left link now)
+        /*
+            have the candidate node inherit the original node's links (left link now)
+        */
         buf = new(bytes.Buffer)
         err = binary.Write(buf, binary.LittleEndian, &currentNode.Left)
         check(err)
 
         newPointer = buf.Bytes()
-        errCode = transaction.AddAction(t, candidateBuf[int(header.FileNameSize):int(header.FileNameSize) + types.POINTER_SIZE], 
-                                        newPointer, candidateNodeLocation + int64(header.FileNameSize))
-        transaction.HandleActionError(errCode)
+        newEntry = modifyEntry(candidateBuf, newPointer, int(header.FileNameSize))
+
+        // errCode = transaction.AddAction(t, candidateBuf, newEntry, candidateNodeLocation)
+        // transaction.HandleActionError(errCode)
 
         // have the candidate node inherit the original node's links (right link now)
         // HOWEVER, if candidate node is the immediate right child of currentNode,
@@ -905,10 +1051,16 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
             err = binary.Write(buf, binary.LittleEndian, &currentNode.Right)
             check(err)
             newPointer = buf.Bytes()
-            errCode = transaction.AddAction(t, candidateBuf[int(header.FileNameSize) + types.POINTER_SIZE:int(header.FileNameSize) + 2*types.POINTER_SIZE], 
-                                        newPointer, candidateNodeLocation + int64(header.FileNameSize) + int64(types.POINTER_SIZE))
-            transaction.HandleActionError(errCode)
+
+            temp := modifyEntry(newEntry, newPointer, int(header.FileNameSize) + types.POINTER_SIZE)
+            newEntry = temp
+
+            // errCode = transaction.AddAction(t, candidateBuf, newEntry, candidateNodeLocation)
+            // transaction.HandleActionError(errCode)
         }
+
+        errCode = transaction.AddAction(t, candidateBuf, newEntry, candidateNodeLocation)
+        transaction.HandleActionError(errCode)
 
         /*
             Last check: did that node you used as a replacement have any children?
@@ -932,22 +1084,23 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
             // since it will now be the left child of the parent of candidate node
             // ^ not true always (candidate node could be immediate to the right of currentNode)
             // need to check if the parent node of candidate node is still currentNode
-            offsetInCandPar := header.FileNameSize
+            offsetInCandPar := int(header.FileNameSize)
 
             newPointer := buf.Bytes()
-            errCode = transaction.AddAction(t, candidateParentBuf[offsetInCandPar:offsetInCandPar + types.POINTER_SIZE], 
-                                        newPointer, candidateParentLocation + int64(offsetInCandPar))
+            newEntry := modifyEntry(candidateParentBuf, newPointer, offsetInCandPar)
+
+            errCode = transaction.AddAction(t, candidateParentBuf, newEntry, candidateParentLocation)
             transaction.HandleActionError(errCode)
 
         } else if candidateNode.Right == 0 && (candidateParentLocation != currentNodeLocation) { // else, just overwrite that link with 0
             newPointer := make([]byte, types.POINTER_SIZE)
-            offsetInCandPar := header.FileNameSize
+            offsetInCandPar := int(header.FileNameSize)
+            newEntry := modifyEntry(candidateParentBuf, newPointer, offsetInCandPar)
 
             // since it will now be the left child of the parent of candidate node
             // ^ not true always (candidate node could be immediate to the right of currentNode)
             // need to check if the parent node of candidate node is still currentNode
-            errCode = transaction.AddAction(t, candidateParentBuf[offsetInCandPar:offsetInCandPar + types.POINTER_SIZE], 
-                                        newPointer, candidateParentLocation + int64(offsetInCandPar))
+            errCode = transaction.AddAction(t, candidateParentBuf, newEntry, candidateParentLocation)
             transaction.HandleActionError(errCode)
 
         } // don't need to do anything in other case, because link from candidate to its child is already correct
@@ -1000,7 +1153,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
 func printTree(entry *types.TreeEntry, header *Header, dbFile *os.File, arr []string, level int, configs *types.Config) {
     if entry != nil {
-        var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+        var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
         // fmt.Printf("%s\n", entry.Filename)
         arr[level] += entry.Filename + " "
         if entry.Left != 0 {
@@ -1049,7 +1202,7 @@ func PrettyPrintTree(username string, depth int, configs *types.Config) {
         b := bytes.NewReader(headerBuf)
         err = binary.Read(b, binary.LittleEndian, &header)
         check(err)
-        var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+        var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
         entryBuf := make([]byte, SIZE_OF_ENTRY)
         _, err = dbFile.ReadAt(entryBuf, header.RootPointer)
@@ -1087,7 +1240,7 @@ func PrettyPrintTreeGetString(username string, disk int, depth int, configs *typ
     b := bytes.NewReader(headerBuf)
     err = binary.Read(b, binary.LittleEndian, &header)
     check(err)
-    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize)
+    var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
     entryBuf := make([]byte, SIZE_OF_ENTRY)
     _, err = dbFile.ReadAt(entryBuf, header.RootPointer)

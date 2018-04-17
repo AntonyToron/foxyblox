@@ -432,6 +432,8 @@ func TestCorruptingADataDisk(t *testing.T) {
 // but the entries are large right now anyway -> seems like the best option**
 // need to check hash on each entry as you go down the tree, though, to ensure
 // catch all cases
+// need hash of the header as well
+// issue might be with computing hash of the root node
 func TestCorruptingADatabaseDisk(t *testing.T) {
 
 }
