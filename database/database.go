@@ -528,6 +528,9 @@ func resizeAllDbDisks(username string, configs *types.Config) {
 
     TODO: maybe need to add the recovery as part of the transaction log (can do this later)
 
+    TODO: might also need to run fsck here, probably a good idea if failure detected,
+    but it is system dependent I guess
+
 */
 func recoverFromDbDiskFailure(dbFilename string, nodeLocation int64, username string, 
                             configs *types.Config) {
