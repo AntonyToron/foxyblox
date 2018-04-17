@@ -619,7 +619,8 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
             }
 
             // write missing piece into the fixed file
-            fixedFile.WriteAt(trueParityStrip, currentLocation)
+            _, err = fixedFile.WriteAt(trueParityStrip, currentLocation)
+            check(err) // NOTE: THIS ERROR CHECK WASN'T HERE BEFORE
 
             // update fixed hash
             currentHash.Write(trueParityStrip)

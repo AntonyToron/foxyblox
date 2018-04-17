@@ -168,3 +168,15 @@ type Config struct {
     4 places should be max, and AWS only can do all of the above, but it is
     better to just do distribute across 4, good savings, and decent reliability
 */
+
+
+/*
+    Big TODO: if there is degredation in data on the parity disk, then need to catch this
+    too, but preferably shouldn't hash the whole file -> maybe should just infer that there
+    is something wrong with the parity disk by just having a daemon go through and check
+    that the parity disk is an accurate reflection of the XOR of all of the files -> this is
+    probably the most feasible, because the likelihood of the parity disk going down that
+    often is very low that we wouldn't be able to catch it, the major points are the database
+    disks
+
+*/

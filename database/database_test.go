@@ -1089,7 +1089,6 @@ func TestAddEntryWithLessThanFourLocations(t *testing.T) {
                   types.HEADER_SIZE, false, 0, 2, configs.Datadisks[0:2])
 
     removeDatabaseStructureAndCheck(t)
-    fmt.Println("finished testaddingfile")
 }
 
 // TODO, have to figure out a way to stop the function halfway through
@@ -1097,5 +1096,111 @@ func TestAddEntryWithLessThanFourLocations(t *testing.T) {
 // and run ReplayLog to see if it makes the database do the same thing
 // can maybe add a boolean into commit that keeps the file or not
 func TestRecoveringFromSystemCrash(t *testing.T) {
+    InitializeDatabaseStructure(configs.Dbdisks)
 
+    username := "atoron"
+    filename := "testingFile.txt"
+
+    CreateDatabaseForUser(username, configs)
+
+    addFileHelper(t, filename, username, types.HEADER_SIZE + int64(types.SIZE_OF_ENTRY), 
+                  types.HEADER_SIZE, false, 0, 2, configs.Datadisks)
+
+
+    /*
+        Simulate disk failure by writing some extraneous bits into one of the entries/the headers
+    */
+
+    // last data disk, might want to make this more general later
+    dbSavedOn := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[len(configs.Dbdisks) - 2], username, 2)
+    dbFile, err := os.OpenFile(dbSavedOn, os.O_RDWR, 0755)
+    check(err)
+
+    fileStat, err := dbFile.Stat(); check(err);
+    sizeOfDbFile := fileStat.Size(); // in bytes
+
+    smallFileData := make([]byte, sizeOfDbFile / 4)
+    rand.Read(smallFileData)
+
+    _, err = dbFile.WriteAt(smallFileData, sizeOfDbFile / 2)
+    check(err)
+
+    dbFile.Close()
+
+
+    // try getting an entry now and see if it works out fine
+    entry := GetFileEntry(filename, username, configs)
+    if entry == nil {
+        t.Errorf("The entry returned is nil")
+        removeDatabaseStructureAndCheck(t)
+        return
+    }
+
+    if entry.Filename != filename {
+        t.Errorf("Filename is incorrect in entry, it is %s", entry.Filename)
+        fmt.Printf("Filename is %s, should be %s\n", entry.Filename, filename)
+        fmt.Printf("Length of filename is %d, should be %d\n", len(entry.Filename), len(filename))
+    }
+
+    for i := 0; i < int(types.MAX_DISK_COUNT) + 1; i++ {
+        // shouldBe := fmt.Sprintf("local_storage/drive%d", i + 1)
+        shouldBe := configs.Datadisks[i]
+        if entry.Disks[i] != shouldBe {
+            t.Errorf("One of the disk locations is incorrect, it is %s", entry.Disks[i])
+        }
+    }
+
+    if entry.Left != 0 && entry.Right != 0 {
+        t.Errorf("The pointers for entry are not right")
+    }
+
+    // check that the parity disk is correct relative to the disks
+    // also check that the parity disk is correct
+    dbParityFileName := fmt.Sprintf("%s/%s_p", configs.Dbdisks[len(configs.Dbdisks) - 1], username)
+    dbParityFile, err := os.Open(dbParityFileName); check(err)
+
+    fileStat, err = dbParityFile.Stat(); check(err);
+    sizeOfParityFile := fileStat.Size(); // in bytes
+
+    parityBuf := make([]byte, sizeOfParityFile)
+    _, err = dbParityFile.ReadAt(parityBuf, 0)
+    check(err)
+
+    testBuf := make([]byte, sizeOfParityFile)
+
+    for i := 0; i < TESTING_DISK_COUNT; i++ {
+        dbFilename := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
+        dbFile, err := os.Open(dbFilename)
+        check(err)
+
+        fileStat, err := dbFile.Stat(); check(err);
+        sizeOfDbFile := fileStat.Size(); // in bytes
+        if sizeOfDbFile != sizeOfParityFile {
+            t.Errorf("The parity and db files are different lengths")
+            break
+        }
+
+        buf := make([]byte, sizeOfDbFile)
+        _, err = dbFile.ReadAt(buf, 0)
+        check(err)
+
+        for j := 0; j < int(sizeOfDbFile); j++ {
+            testBuf[j] ^= buf[j]
+        }
+
+        dbFile.Close()
+    }
+
+    for i := 0; i < int(sizeOfParityFile); i++ {
+        if parityBuf[i] != testBuf[i] {
+            t.Errorf("Incorrect XOR at location %d\n", i)
+            fmt.Printf("Parity = %x, should be %x\n", parityBuf[i], testBuf[i])
+            log.Fatal("broken")
+            break
+        }
+    }
+
+    dbParityFile.Close()
+
+    removeDatabaseStructureAndCheck(t)
 }

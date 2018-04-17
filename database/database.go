@@ -71,17 +71,6 @@ func pathExists(path string) (bool) {
 func bufferToEntry(buf []byte, header *Header, configs *types.Config) (*types.TreeEntry) {
     currentFilename := bytes.Trim(buf[0:header.FileNameSize], "\x00")
     currentNode := types.TreeEntry{string(currentFilename), 0, 0, []string(nil), nil}
-    // if (string(currentFilename) == "") {
-    //     fmt.Printf("Why is it empty\n\n\n\n")
-    // } else {
-    //     fmt.Printf("Got %s\n", string(currentFilename))
-    // }
-
-    // if len(buf) != int(types.SIZE_OF_ENTRY) {
-    //     fmt.Println("\n\n\n\n\n wrong size \n\n\n\n\n")
-    //     log.Fatal("different size")
-    // }
-
 
     b := bytes.NewReader(buf[header.FileNameSize: header.FileNameSize + types.POINTER_SIZE])
     err := binary.Read(b, binary.LittleEndian, &currentNode.Left); check(err)
@@ -162,7 +151,7 @@ func verifyFreeListEntry(freeListEntryBuf []byte) []byte {
 }
 
 // get the header in this dbFile
-func getHeader(dbFile *os.File) (Header) {
+func getHeader(dbFile *os.File) (Header, int) {
     buf := make([]byte, types.HEADER_SIZE)
     _, err := dbFile.ReadAt(buf, 0)
     check(err)
@@ -181,12 +170,13 @@ func getHeader(dbFile *os.File) (Header) {
     originalHash := buf[sizeOfRawHeader:sizeOfRawHeader + types.MD5_SIZE]
     for i := 0; i < types.MD5_SIZE; i++ {
         if originalHash[i] != computedHeaderHash[i] {
-            log.Fatal("Error in header")
+            return header, -1
+            // log.Fatal("Error in header")
             // fmt.Printf("Error in header\n")
         }
     }
 
-    return header
+    return header, 0
 }
 
 // get the database that this file is stored in
@@ -530,12 +520,98 @@ func resizeAllDbDisks(username string, configs *types.Config) {
     fmt.Printf("Resized all of the disks\n")
 }
 
-func recoverFromDbDiskFailure(dbFilename string, nodeLocation int64) {
+/*
+    TODO: should run a daemon goroutine that wakes up every day at night to
+    check if the parity disk is an accurate reflection of the XOR of the databases
+
+    If not, then manually fix that drive by recomputing it
+
+    TODO: maybe need to add the recovery as part of the transaction log (can do this later)
+
+*/
+func recoverFromDbDiskFailure(dbFilename string, nodeLocation int64, username string, 
+                            configs *types.Config) {
     fmt.Printf("Detected an error in drive: %s, location: %d\n", dbFilename, nodeLocation)
-    log.Fatal("Didn't recover")
 
-    // TODO: maybe need to add the recovery as part of the transaction log (can do this later)
+    dataDiskCount := len(configs.Dbdisks) - configs.ParityDiskCount
 
+    /*
+        Delete the offending file, and recreate it with the correct data
+    */
+    os.Remove(dbFilename)
+    fixedFile, err := os.OpenFile(dbFilename, os.O_RDWR | os.O_CREATE, 0755)
+    check(err)
+
+    // read all of the other disks besides this one, and XOR with the parity
+    // disk bit by bit and reconstruct the file
+    // NOTE: this can be done much more efficiently by issuing more IO requests
+    // and using a similar approach as the original saving of the file, but
+    // when recovering the file, performance isn't as big of an issue because
+    // of the rarity of the occasion (temporary implementation)
+
+    otherDriveFiles := make([]*os.File, dataDiskCount - 1)
+    parityDriveFileName := fmt.Sprintf("%s/%s_p", configs.Dbdisks[len(configs.Dbdisks) - 1], username) 
+
+    parityDriveFile, err := os.Open(parityDriveFileName)
+    check(err)
+    
+    count := 0
+    for i := 0; i < dataDiskCount; i++ {
+        tmpName := fmt.Sprintf("%s/%s_%d", configs.Dbdisks[i], username, i)
+        if tmpName != dbFilename {
+            otherDriveFiles[count], err = os.Open(tmpName); check(err)
+            count++
+        }
+    }
+
+    fileStat, err := parityDriveFile.Stat(); check(err);
+    size := fileStat.Size(); // in bytes
+    // fmt.Printf("\n\n\n\nSize: %d\n\n\n\n", size)
+
+    trueParityStrip := make([]byte, types.MAX_BUFFER_SIZE)
+    buf := make([]byte, types.MAX_BUFFER_SIZE)
+
+    var currentLocation int64 = 0
+    for currentLocation != size {
+        // check if need to resize the buffers
+        if (size - currentLocation) < int64(types.MAX_BUFFER_SIZE) {
+            newSize := size - currentLocation
+
+            trueParityStrip = make([]byte, newSize)
+            buf = make([]byte, newSize)
+        } else {
+            trueParityStrip = make([]byte, types.MAX_BUFFER_SIZE)
+        }
+
+        // true parity strip
+        _, err = parityDriveFile.ReadAt(trueParityStrip, currentLocation)
+        check(err)
+
+        // compute the missing piece by XORing all of the other strips
+        for i := 0; i < len(otherDriveFiles); i++ {
+            file := otherDriveFiles[i]
+
+            _, err = file.ReadAt(buf, currentLocation)
+            check(err)
+
+            for j := 0; j < len(trueParityStrip); j++ {
+                trueParityStrip[j] ^= buf[j]
+            }
+        }
+
+        // write missing piece into the fixed file
+        _, err = fixedFile.WriteAt(trueParityStrip, currentLocation)
+        check(err)
+
+        // update location
+        currentLocation += int64(len(trueParityStrip))
+    }
+
+    for i := 0; i < len(otherDriveFiles); i++ {
+        otherDriveFiles[i].Close()
+    }
+    parityDriveFile.Close()
+    fixedFile.Close()
 }
 
 /*
@@ -583,7 +659,11 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     fileStat, err := dbFile.Stat(); check(err);
     sizeOfDbFile := fileStat.Size(); // in bytes
 
-    header := getHeader(dbFile)
+    header, errCode := getHeader(dbFile)
+    for errCode != 0 { // error in computed hash
+        recoverFromDbDiskFailure(dbFilename, 0, username, configs)
+        header, errCode = getHeader(dbFile)
+    }
     oldHeader := header
 
     var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
@@ -630,7 +710,8 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     entryBuf := make([]byte, SIZE_OF_ENTRY)
     for !foundInsertionPoint {
         // read in the current node
-        dbFile.ReadAt(entryBuf, currentNodeLocation)
+        _, err = dbFile.ReadAt(entryBuf, currentNodeLocation)
+        check(err)
         currentNode := bufferToEntry(entryBuf, &header, configs)
 
         /*
@@ -638,8 +719,13 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             incorrect) -> fix this disk and re-write this entry to the location
             where it was supposed to be
         */
-        if currentNode == nil {
-            recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+        for currentNode == nil {
+            recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+            // get the currentNode again
+            _, err = dbFile.ReadAt(entryBuf, currentNodeLocation)
+            check(err)
+
+            currentNode = bufferToEntry(entryBuf, &header, configs)
         }
 
         // go left if < (if equals, doesn't make sense to keep going)
@@ -706,7 +792,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     newParentLink := binaryBuffer.Bytes()
     newEntry := modifyEntry(entryBuf, newParentLink, offsetToPointer)
 
-    errCode := transaction.AddAction(t, entryBuf, newEntry, currentNodeLocation)
+    errCode = transaction.AddAction(t, entryBuf, newEntry, currentNodeLocation)
     transaction.HandleActionError(errCode)
 
     // update the true size of the database (we are going to enter a new entry)
@@ -723,8 +809,15 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     // there to check)
     if header.FreeList != (header.TrueDbSize - int64(SIZE_OF_ENTRY)) {
         freeListEntry := verifyFreeListEntry(insertionPointBuf)
-        if freeListEntry == nil {
-            recoverFromDbDiskFailure(dbFilename, header.FreeList)
+        for freeListEntry == nil {
+            recoverFromDbDiskFailure(dbFilename, header.FreeList, username, configs)
+
+            // get the currentNode again
+            insertionPointBuf := make([]byte, SIZE_OF_ENTRY)
+            _, err = dbFile.ReadAt(insertionPointBuf, header.FreeList)
+            check(err)
+
+            freeListEntry = verifyFreeListEntry(insertionPointBuf)
         }
     }
 
@@ -792,7 +885,11 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
     check(err)
 
-    header := getHeader(dbFile)
+    header, errCode := getHeader(dbFile)
+    for errCode != 0 { // error in computed hash
+        recoverFromDbDiskFailure(dbFilename, 0, username, configs)
+        header, errCode = getHeader(dbFile)
+    }
     var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
     /*
@@ -811,7 +908,8 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     for !foundFileOrLeaf {
         // read in the current node
         buf := make([]byte, SIZE_OF_ENTRY)
-        dbFile.ReadAt(buf, currentNodeLocation)
+        _, err = dbFile.ReadAt(buf, currentNodeLocation)
+        check(err)
 
         currentNode = bufferToEntry(buf, &header, configs)
         /*
@@ -819,8 +917,15 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
             incorrect) -> fix this disk and re-write this entry to the location
             where it was supposed to be
         */
-        if currentNode == nil {
-            recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+        for currentNode == nil {
+            recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+
+            // get the currentNode again
+            buf := make([]byte, SIZE_OF_ENTRY)
+            _, err = dbFile.ReadAt(buf, currentNodeLocation)
+            check(err)
+
+            currentNode = bufferToEntry(buf, &header, configs)
         }
 
         // go left if < (if equals, doesn't make sense to keep going)
@@ -875,7 +980,12 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     dbFile, err := os.OpenFile(dbFilename, os.O_RDWR, 0755)
     check(err)
 
-    header := getHeader(dbFile)
+    header, errCode := getHeader(dbFile)
+    for errCode != 0 { // error in computed hash
+        recoverFromDbDiskFailure(dbFilename, 0, username, configs)
+        // get the header again
+        header, errCode = getHeader(dbFile)
+    }
     oldHeader := header
 
     // Start at root
@@ -902,7 +1012,12 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
             where it was supposed to be
         */
         if currentNode == nil {
-            recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+            recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+            // get the currentNode again
+            _, err = dbFile.ReadAt(currentNodeBuf, currentNodeLocation)
+            check(err)
+
+            currentNode = bufferToEntry(currentNodeBuf, &header, configs)
         }
 
         // go left if < (if equals, doesn't make sense to keep going)
@@ -960,11 +1075,18 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
     // do this just for the hash check
     oldEntry := bufferToEntry(oldEntryBuf, &header, configs)
-    if oldEntry == nil {
-        recoverFromDbDiskFailure(dbFilename, currentNodeLocation)
+    for oldEntry == nil {
+        recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+
+        // get the currentNode again
+        oldEntryBuf = make([]byte, SIZE_OF_ENTRY)
+        _, err = dbFile.ReadAt(oldEntryBuf, currentNodeLocation)
+        check(err)
+
+        oldEntry = bufferToEntry(oldEntryBuf, &header, configs)
     }
 
-    errCode := transaction.AddAction(t, oldEntryBuf, newEntry, currentNodeLocation)
+    errCode = transaction.AddAction(t, oldEntryBuf, newEntry, currentNodeLocation)
     transaction.HandleActionError(errCode)
 
     // update free list to point here now, since freed up memory
@@ -1025,8 +1147,14 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
             candidateNode = bufferToEntry(candidateBuf, &header, configs)
 
-            if candidateNode == nil {
-                recoverFromDbDiskFailure(dbFilename, candidateNodeLocation)
+            for candidateNode == nil {
+                recoverFromDbDiskFailure(dbFilename, candidateNodeLocation, username, configs)
+                // get the currentNode again
+                candidateBuf = make([]byte, SIZE_OF_ENTRY)
+                _, err = dbFile.ReadAt(candidateBuf, currentNodeLocation)
+                check(err)
+
+                candidateNode = bufferToEntry(candidateBuf, &header, configs)
             }
             
             // if doesn't have a left child, then it is the leftmost
