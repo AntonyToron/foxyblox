@@ -663,9 +663,12 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     sizeOfDbFile := fileStat.Size(); // in bytes
 
     header, errCode := getHeader(dbFile)
-    for errCode != 0 { // error in computed hash
+    retries := 0
+    for errCode != 0 && retries != types.RETRY_COUNT { // error in computed hash
         recoverFromDbDiskFailure(dbFilename, 0, username, configs)
         header, errCode = getHeader(dbFile)
+
+        retries++
     }
     oldHeader := header
 
@@ -722,13 +725,16 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             incorrect) -> fix this disk and re-write this entry to the location
             where it was supposed to be
         */
-        for currentNode == nil {
+        retries := 0
+        for currentNode == nil && retries != types.RETRY_COUNT {
             recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
             // get the currentNode again
             _, err = dbFile.ReadAt(entryBuf, currentNodeLocation)
             check(err)
 
             currentNode = bufferToEntry(entryBuf, &header, configs)
+
+            retries++
         }
 
         // go left if < (if equals, doesn't make sense to keep going)
@@ -826,7 +832,8 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     // there to check)
     if header.FreeList != (header.TrueDbSize - int64(SIZE_OF_ENTRY)) {
         freeListEntry := verifyFreeListEntry(insertionPointBuf)
-        for freeListEntry == nil {
+        retries := 0
+        for freeListEntry == nil && retries != types.RETRY_COUNT {
             recoverFromDbDiskFailure(dbFilename, header.FreeList, username, configs)
 
             // get the currentNode again
@@ -835,6 +842,8 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             check(err)
 
             freeListEntry = verifyFreeListEntry(insertionPointBuf)
+
+            retries++
         }
     }
 
@@ -903,9 +912,12 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     check(err)
 
     header, errCode := getHeader(dbFile)
-    for errCode != 0 { // error in computed hash
+    retries := 0
+    for errCode != 0 && retries != types.RETRY_COUNT { // error in computed hash
         recoverFromDbDiskFailure(dbFilename, 0, username, configs)
         header, errCode = getHeader(dbFile)
+
+        retries++
     }
     var SIZE_OF_ENTRY int16 = header.FileNameSize + 2*(types.POINTER_SIZE) + int16(header.DiskCount + 1) * int16(header.DiskNameSize) + types.MD5_SIZE
 
@@ -934,7 +946,8 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
             incorrect) -> fix this disk and re-write this entry to the location
             where it was supposed to be
         */
-        for currentNode == nil {
+        retries := 0
+        for currentNode == nil && retries != types.RETRY_COUNT {
             recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
 
             // get the currentNode again
@@ -943,6 +956,8 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
             check(err)
 
             currentNode = bufferToEntry(buf, &header, configs)
+
+            retries++
         }
 
         // go left if < (if equals, doesn't make sense to keep going)
@@ -998,10 +1013,13 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     check(err)
 
     header, errCode := getHeader(dbFile)
-    for errCode != 0 { // error in computed hash
+    retries := 0
+    for errCode != 0 && retries != types.RETRY_COUNT { // error in computed hash
         recoverFromDbDiskFailure(dbFilename, 0, username, configs)
         // get the header again
         header, errCode = getHeader(dbFile)
+
+        retries++
     }
     oldHeader := header
 
@@ -1028,13 +1046,15 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
             incorrect) -> fix this disk and re-write this entry to the location
             where it was supposed to be
         */
-        if currentNode == nil {
+        retries := 0
+        for currentNode == nil && retries != types.RETRY_COUNT {
             recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
             // get the currentNode again
             _, err = dbFile.ReadAt(currentNodeBuf, currentNodeLocation)
             check(err)
 
             currentNode = bufferToEntry(currentNodeBuf, &header, configs)
+            retries++
         }
 
         // go left if < (if equals, doesn't make sense to keep going)
@@ -1092,7 +1112,8 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
     // do this just for the hash check
     oldEntry := bufferToEntry(oldEntryBuf, &header, configs)
-    for oldEntry == nil {
+    retries = 0
+    for oldEntry == nil && retries != types.RETRY_COUNT {
         recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
 
         // get the currentNode again
@@ -1101,6 +1122,8 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         check(err)
 
         oldEntry = bufferToEntry(oldEntryBuf, &header, configs)
+
+        retries++
     }
 
     errCode = transaction.AddAction(t, oldEntryBuf, newEntry, currentNodeLocation)
@@ -1164,7 +1187,8 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
             candidateNode = bufferToEntry(candidateBuf, &header, configs)
 
-            for candidateNode == nil {
+            retries := 0
+            for candidateNode == nil && retries != types.RETRY_COUNT {
                 recoverFromDbDiskFailure(dbFilename, candidateNodeLocation, username, configs)
                 // get the currentNode again
                 candidateBuf = make([]byte, SIZE_OF_ENTRY)
@@ -1172,6 +1196,8 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
                 check(err)
 
                 candidateNode = bufferToEntry(candidateBuf, &header, configs)
+
+                retries++
             }
             
             // if doesn't have a left child, then it is the leftmost

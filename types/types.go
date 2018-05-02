@@ -50,6 +50,7 @@ const LOCALHOST_DBDISK = "storage/dbdrive%d"
 const LOCALHOST_DATADISK = "storage/drive%d"
 const DBDISK_COUNT = 3 // not including parity db disk
 const DBDISK_PARITY_COUNT = 1
+const RETRY_COUNT = 3
 
 // transaction-related constants
 const INIT_ACTION_SIZE = 5

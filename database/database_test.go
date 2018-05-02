@@ -26,7 +26,7 @@ const SMALL_FILE_SIZE int = 1024
 const BUF_SIZE int = 1024
 const VERY_SMALL_FILE_SIZE = 6 // currently 1, 3 aren't working perfectly
 const REGULAR_FILE_SIZE int = 8192
-const ROUNDS = 100
+const ROUNDS = 10
 const TESTING_DISK_COUNT = 3
 
 // 24
