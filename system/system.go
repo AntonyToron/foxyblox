@@ -45,6 +45,9 @@ func pathExists(path string) (bool) {
         sys = LOCALHOST (default), EBS
         dbdisks = ["storage/dbdrive<i>"] (default),
             ["/dev/sda1", "/dev/sda2", etc.] - should be 4 of them
+
+    TODO: another option here would be to just set environment variables instead
+    of having to pass it through, not clear which is better
 */
 func GetConfigs() *types.Config {
     if !pathExists(types.CONFIG_FILE) {
@@ -57,7 +60,7 @@ func GetConfigs() *types.Config {
             dbDisks[i] = fmt.Sprintf(types.LOCALHOST_DBDISK, i)
         }
 
-        diskLocations = make([]string, types.DISK_COUNT + types.NUM_PARITY_DISKS)
+        diskLocations := make([]string, types.DISK_COUNT + types.NUM_PARITY_DISKS)
         for i := 0; i < len(diskLocations); i++ {
             diskLocations[i] = fmt.Sprintf(types.LOCALHOST_DATADISK, i)
         }
@@ -155,8 +158,18 @@ func GetFile(filename string, username string) string {
     // first fetch where it is stored in database
     entry := database.GetFileEntry(filename, username, configs)
     if entry == nil {
+        fmt.Printf("Did not find the file %s\n", filename)
         return ""
     }
+
+    // trim entry.Disks if not saved on max
+    newLength := len(entry.Disks)
+    for i := len(entry.Disks) - 1; i > 0; i-- {
+        if entry.Disks[i] == "" {
+            newLength--
+        }
+    }
+    entry.Disks = entry.Disks[0:newLength]
 
     // get the actual file from those locations
     downloadedTo := fileutils.GetFile(filename, username, entry.Disks, configs)
@@ -174,10 +187,36 @@ func DeleteFile(filename string, username string) *types.TreeEntry {
         return nil
     }
 
+    // trim entry.Disks if not saved on max
+    newLength := len(entry.Disks)
+    for i := len(entry.Disks) - 1; i > 0; i-- {
+        if entry.Disks[i] == "" {
+            newLength--
+        }
+    }
+    entry.Disks = entry.Disks[0:newLength]
+
     // now actually remove the saved file (if crash during this, can just
     // occasionally skim the database and remove files that don't exist
     // in the database from the system)
     fileutils.RemoveFile(filename, username, entry.Disks, configs)
 
     return entry
+}
+
+func InitLocal() {
+    if !pathExists("./storage") {
+        os.Mkdir("storage", types.REGULAR_FILE_MODE)
+    }
+
+    for i := 0; i < types.DISK_COUNT + 1; i++ {
+        diskFolder := fmt.Sprintf("./storage/drive%d", i)
+        if !pathExists(diskFolder) {
+            os.Mkdir(diskFolder, types.REGULAR_FILE_MODE)
+        }
+        dbdiskFolder := fmt.Sprintf("./storage/dbdrive%d", i)
+        if !pathExists(dbdiskFolder) {
+            os.Mkdir(dbdiskFolder, types.REGULAR_FILE_MODE)
+        }
+    }
 }

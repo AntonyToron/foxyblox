@@ -991,6 +991,7 @@ func GetFile(filename string, username string, diskLocations []string, configs *
     // bits stored on the parity disk
     parityFilename := fmt.Sprintf("%s/%s/%s_p", localDiskLocations[len(localDiskLocations) - 1],
                                   username, filename)
+    fmt.Printf("parity: %s\n", parityFilename)
     go basicParityChecker(parityFilename, parityCompletionChannel, 
                         canRecoverChannel, localDiskLocations, username, configs)
 

@@ -745,7 +745,21 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             // entry already exists, likely just updating it
             // can handle this later
 
-            foundInsertionPoint = true
+            // TODO: handle the case when saving the file again, just update
+            // the current entry and that's it
+
+            // copy in the actual entry now
+            errCode = transaction.AddAction(t, entryBuf, targetNode, currentNodeLocation)
+            transaction.HandleActionError(errCode)
+
+            dbFile.Close()
+            transaction.Commit(t)
+
+            fmt.Printf("Updated entry for %s\n", filename)
+
+            return
+
+            // foundInsertionPoint = true
 
         } else { // go right if >
             if currentNode.Right == 0 {
