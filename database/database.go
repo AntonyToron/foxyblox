@@ -665,7 +665,14 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     header, errCode := getHeader(dbFile)
     retries := 0
     for errCode != 0 && retries != types.RETRY_COUNT { // error in computed hash
+        dbFile.Close()
+
         recoverFromDbDiskFailure(dbFilename, 0, username, configs)
+
+        // reopen the database file
+        dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+        check(err)
+
         header, errCode = getHeader(dbFile)
 
         retries++
@@ -727,7 +734,14 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
         */
         retries := 0
         for currentNode == nil && retries != types.RETRY_COUNT {
+            dbFile.Close()
+
             recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+
+            // reopen the database file
+            dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+            check(err)
+
             // get the currentNode again
             _, err = dbFile.ReadAt(entryBuf, currentNodeLocation)
             check(err)
@@ -834,7 +848,13 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
         freeListEntry := verifyFreeListEntry(insertionPointBuf)
         retries := 0
         for freeListEntry == nil && retries != types.RETRY_COUNT {
+            dbFile.Close()
+
             recoverFromDbDiskFailure(dbFilename, header.FreeList, username, configs)
+
+            // reopen the database file
+            dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+            check(err)
 
             // get the currentNode again
             insertionPointBuf := make([]byte, SIZE_OF_ENTRY)
@@ -914,7 +934,14 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     header, errCode := getHeader(dbFile)
     retries := 0
     for errCode != 0 && retries != types.RETRY_COUNT { // error in computed hash
+        dbFile.Close()
+
         recoverFromDbDiskFailure(dbFilename, 0, username, configs)
+
+        // reopen the database file
+        dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+        check(err)
+
         header, errCode = getHeader(dbFile)
 
         retries++
@@ -948,7 +975,13 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
         */
         retries := 0
         for currentNode == nil && retries != types.RETRY_COUNT {
+            dbFile.Close() // close the file first, since recover will delete it**
+
             recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+
+            // reopen the database file
+            dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+            check(err)
 
             // get the currentNode again
             buf := make([]byte, SIZE_OF_ENTRY)
@@ -1015,7 +1048,14 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     header, errCode := getHeader(dbFile)
     retries := 0
     for errCode != 0 && retries != types.RETRY_COUNT { // error in computed hash
+        dbFile.Close()
+
         recoverFromDbDiskFailure(dbFilename, 0, username, configs)
+
+        // reopen the database file
+        dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+        check(err)
+
         // get the header again
         header, errCode = getHeader(dbFile)
 
@@ -1048,7 +1088,14 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
         */
         retries := 0
         for currentNode == nil && retries != types.RETRY_COUNT {
+            dbFile.Close()
+
             recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+
+            // reopen the database file
+            dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+            check(err)
+
             // get the currentNode again
             _, err = dbFile.ReadAt(currentNodeBuf, currentNodeLocation)
             check(err)
@@ -1114,7 +1161,13 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     oldEntry := bufferToEntry(oldEntryBuf, &header, configs)
     retries = 0
     for oldEntry == nil && retries != types.RETRY_COUNT {
+        dbFile.Close()
+
         recoverFromDbDiskFailure(dbFilename, currentNodeLocation, username, configs)
+
+        // reopen the database file
+        dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+        check(err)
 
         // get the currentNode again
         oldEntryBuf = make([]byte, SIZE_OF_ENTRY)
@@ -1189,7 +1242,14 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
             retries := 0
             for candidateNode == nil && retries != types.RETRY_COUNT {
+                dbFile.Close()
+
                 recoverFromDbDiskFailure(dbFilename, candidateNodeLocation, username, configs)
+
+                // reopen the database file
+                dbFile, err = os.OpenFile(dbFilename, os.O_RDWR, 0755)
+                check(err)
+                
                 // get the currentNode again
                 candidateBuf = make([]byte, SIZE_OF_ENTRY)
                 _, err = dbFile.ReadAt(candidateBuf, currentNodeLocation)
