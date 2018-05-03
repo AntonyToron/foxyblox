@@ -26,11 +26,16 @@ const VERY_SMALL_FILE_SIZE = 6 // currently 1, 3 aren't working perfectly
 const REGULAR_FILE_SIZE int = 8192
 const TESTING_DISK_COUNT int = 3
 const ROUNDS = 10
+const FILE_SIZE_CAP = 4 // 32
+const FILE_SIZE_MIN = 3
+const NAME_SIZE = 24
+const DATABASE_SIZE = 100
 
 // 24
 var LARGE_FILE_SIZE int64 = int64(math.Pow(2, float64(18))) //int64(math.Pow(2, float64(30))) // 1 GB
 var configs *types.Config
 var diskLocations []string
+var letterRunes = []rune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$^&()_+[]{}")
 
 func TestMain(m *testing.M) {
     fmt.Println("Setting up for tests")
@@ -67,6 +72,14 @@ func TestMain(m *testing.M) {
     generalCleanup()
 
     os.Exit(retCode)
+}
+
+func randStringRunes(n int) string {
+    b := make([]rune, n)
+    for i := range b {
+        b[i] = letterRunes[rand.Intn(len(letterRunes))]
+    }
+    return string(b)
 }
 
 func initializeDatabaseStructureLocal() bool {
@@ -436,4 +449,138 @@ func TestCorruptingADataDisk(t *testing.T) {
 // issue might be with computing hash of the root node
 func TestCorruptingADatabaseDisk(t *testing.T) {
 
+}
+
+func TestCorruptingParityDiskThenCallCronTask(t *testing.T) {
+
+}
+
+/*
+    Benchmarking tests
+*/
+
+func createRandomFile(filename string, fileSize int64) {
+    data := make([]byte, types.MAX_BUFFER_SIZE)
+
+    file, err := os.OpenFile(filename, os.O_RDWR | os.O_CREATE, 0755)
+    check(err)
+
+    var currentLocation int64 = 0
+    for currentLocation != fileSize {
+        // check if need to resize the buffers
+        if (fileSize - currentLocation) < int64(types.MAX_BUFFER_SIZE) {
+            newSize := fileSize - currentLocation
+
+            data = make([]byte, newSize)
+        } else {
+            data = make([]byte, types.MAX_BUFFER_SIZE)
+        }
+
+        rand.Read(data)
+
+        _, err = file.WriteAt(data, currentLocation) 
+        check(err)
+
+        currentLocation += int64(len(data))
+    }
+
+    file.Sync()
+    file.Close()
+}
+
+// should the database be prepopulated with values, and get some statistics on
+// how slow it is when things are in the database, also is saving a file idempotent
+// can make a separate test for saving same file size over and over, and see how
+// that goes up the more entries you have in the database
+func BenchmarkSavingDifferentFileSizesOnFourDisks(b *testing.B) {
+    initializeDatabaseStructureLocal()
+
+    // 2^30 = 1 GB, 2^32 = 4 GB, 2^34 = 16 GB
+    diskLocations = make([]string, TESTING_DISK_COUNT + 1)
+    for i := 0; i < len(diskLocations); i++ {
+        diskLocations[i] = fmt.Sprintf("./storage/drive%d", i)
+    }
+
+    /*
+        Prepopulate the database with about 50-100 values, just for some average
+        number, can be small files
+    */
+    fmt.Println("in test")
+    databaseFiles := make([]string, DATABASE_SIZE)
+
+    for i := 0; i < DATABASE_SIZE; i++ {
+        testingFilename := randStringRunes(NAME_SIZE)
+        username := "atoron" // all on same user for testing
+
+        fileSize := int64(SMALL_FILE_SIZE)
+
+        databaseFiles[i] = testingFilename
+
+        // create the file, with random data
+        createRandomFile(testingFilename, fileSize)
+
+        fmt.Println("finished create file")
+
+        AddFile(testingFilename, username, diskLocations)
+
+        fmt.Println("adding files")
+    }
+    
+    // run the tests
+    for i := FILE_SIZE_MIN; i < FILE_SIZE_CAP; i++ {
+        testingFilename := randStringRunes(NAME_SIZE)
+        username := "atoron" // all on same user for testing
+
+        fileSize := int64(math.Pow(2, float64(i)))
+
+        // create the file, with random data
+        createRandomFile(testingFilename, fileSize)
+
+        fmt.Printf("About to run file size %d\n", i)
+
+        b.Run(fmt.Sprintf("SaveOnFour-FileSize=2^%d", i), func(b *testing.B) {
+            // test saving it
+            for j := 0; j < b.N; j++ {
+                // preferably switch up the name of the file every time (but
+                // this would increase the database every time...), technically
+                // should be reconstructing the tree every time for this test
+                // to really be accurate, can just re-enter the same filename
+                // and everything multiple times, it is idempotent anyway, but
+                // actually it's faster to just add when you already have
+                // entry in the database, so this won't be an accurate reading
+
+                AddFile(testingFilename, username, diskLocations)
+
+                // just going to delete the file after, so that the runtimes
+                // make sense, at least it'll just be a multiple of 2 basically
+                // for all of the, so get an idea of this for different file
+                // sizes (note that the file size doesn't matter for the
+                // database itself)
+
+                time.Sleep(100 * time.Millisecond)
+
+
+                DeleteFile(testingFilename, username)
+
+                // since deleted, it won't be "cached" anymore, and save time
+                // will be the same across runs
+            }
+        })
+    }
+
+    // clean up
+    for i := 0; i < DATABASE_SIZE; i++ {
+        os.Remove(databaseFiles[i])
+    }
+
+    removeDatabaseStructureLocal()
+}
+
+// func BenchmarkSaveSameFileSizeManyTimesOnDb(b *testing.B) {
+
+// }
+
+func TestPlay(t *testing.T) {
+    str := randStringRunes(NAME_SIZE)
+    fmt.Printf("Runes: %s\n", str)
 }
