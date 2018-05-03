@@ -163,7 +163,7 @@ func pathExists(path string) (bool) {
         // storageType int,
 */
 func SaveFile(path string, username string, diskLocations []string, configs *types.Config) {
-    dataDisks := configs.Datadisks
+    // dataDisks := configs.Datadisks
 
     // if user does not have a defined structure, create folders for him in all
     // of the drives (maybe can do this in some sort of add user function)
@@ -171,7 +171,7 @@ func SaveFile(path string, username string, diskLocations []string, configs *typ
     for i := 0; i < len(diskLocations); i++ { // maybe just do for diskLocations TODO
         // this won't work for all of the drives, since not all will have the
         // perfect local structure TODO
-        fmt.Printf("datadisk: %s\n", dataDisks[i])
+        // fmt.Printf("datadisk: %s\n", dataDisks[i])
         directory := fmt.Sprintf("%s/%s", diskLocations[i], username)
         if !pathExists(directory) {
             os.Mkdir(directory, 0755)
@@ -191,16 +191,13 @@ func SaveFile(path string, username string, diskLocations []string, configs *typ
     }
 
     filename := filepath.Base(path);
-    fmt.Printf("Filename: %s, path = %s\n", filename, path)
     originalFile, err := os.Open(path); check(err);
 
     fileStat, err := originalFile.Stat(); check(err);
     size := fileStat.Size(); // in bytes
-    fmt.Printf("Size of file: %d\n", size)
 
     // NOTE: this could equivalently be just configs.DataDiskCount
     dataDiskCount := len(diskLocations) - configs.ParityDiskCount
-    fmt.Printf("Data disk count: %d\n", dataDiskCount)
 
     /*
         Calculate length of the strips the file will be divided into
@@ -372,7 +369,7 @@ func parityWriter(location string, parityChannel chan []byte, completionChannel 
     parityFile.Close()
 
     completionChannel <- 0 // success
-    fmt.Println("Parity writer exiting");
+    // fmt.Println("Parity writer exiting");
 }
 
 func reader(originalFile *os.File, readRequests <-chan *readOp) {
@@ -391,7 +388,7 @@ func reader(originalFile *os.File, readRequests <-chan *readOp) {
         request.response <- response
     }
 
-    fmt.Println("Reader exiting");
+    // fmt.Println("Reader exiting");
 }
 
 func writer(start int64, end int64, location string, readRequests chan<- *readOp,
@@ -402,9 +399,8 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
         entire strip to disk
     */
     // end should not be included [start, end)
-    fmt.Printf("Writer initialized from %d to %d\n", start, end)
+    // fmt.Printf("Writer initialized from %d to %d\n", start, end)
     file, err := openFile(location); check(err) // file to write into
-    fmt.Printf("Opened file\n")
     var currentLocation int64 = start;
     var locationInOutputFile int64 = 0;
 
@@ -439,7 +435,6 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
         check(response.err);
         var payloadLength int64 = int64(len(response.payload))
         if (payloadLength < num) {
-            fmt.Println("Didn't read as many bytes as wanted");
             currentLocation += payloadLength;
         } else {
             currentLocation += payloadLength;
@@ -490,7 +485,7 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
     // elapsed := time.Since(startTime)
     // fmt.Printf("Hash took %s", elapsed)
 
-    fmt.Printf("Final hash: %x, length = %d\n", finalHash, len(finalHash))
+    // fmt.Printf("Final hash: %x, length = %d\n", finalHash, len(finalHash))
 
     _, err = file.WriteAt(finalHash, locationInOutputFile)
     check(err)
@@ -499,7 +494,7 @@ func writer(start int64, end int64, location string, readRequests chan<- *readOp
 
     // return and let people know you are done
     completionChannel <- 0 // success
-    fmt.Println("Writer exiting");
+    // fmt.Println("Writer exiting");
 }
 
 /*
@@ -540,7 +535,7 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
     oName := offendingFile.Name()
     offendingFile.Close()
     os.Remove(offendingFileLocation)
-    fmt.Printf("Offending file location %s\n", offendingFileLocation)
+    // fmt.Printf("Offending file location %s\n", offendingFileLocation)
     fixedFile, err := openFile(offendingFileLocation); check(err)
 
     rawFileName := oName
@@ -548,7 +543,6 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
     rawFileName = rawFileName[:lastIndex] // cut off the _driveID part
     x := strings.Split(rawFileName, "/")
     rawFileName = x[len(x) - 1] // get the last part of the path, if name = path
-    fmt.Printf("Raw file name: %s\n", rawFileName)  
 
     if !isParityDisk {
         // read all of the other disks besides this one, and XOR with the parity
@@ -571,7 +565,6 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
             if i != driveID {
                 tmpName := fmt.Sprintf("%s/%s/%s_%d", diskLocations[i],
                                         username, rawFileName, i)
-                fmt.Printf("Tmp name: %s\n", tmpName)
                 otherDriveFiles[count], err = os.Open(tmpName); check(err)
 
                 count++
@@ -636,13 +629,13 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
                     }
                 }
 
-                fmt.Printf("True padding size in fix = %d\n", truePaddingSize)
-                fmt.Printf("length before trim: %d\n", len(trueParityStrip))
+                // fmt.Printf("True padding size in fix = %d\n", truePaddingSize)
+                // fmt.Printf("length before trim: %d\n", len(trueParityStrip))
 
                 // resize the size of the true raw data
                 trueParityStrip = append([]byte(nil), trueParityStrip[:len(trueParityStrip) - truePaddingSize]...)
 
-                fmt.Printf("length after trim: %d\n", len(trueParityStrip))
+                // fmt.Printf("length after trim: %d\n", len(trueParityStrip))
 
                 // update "size" of the file
                 size -= int64(truePaddingSize)
@@ -655,7 +648,7 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         }
 
         fixedHash := currentHash.Sum(nil)
-        fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
+        // fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
         _, err = fixedFile.WriteAt(fixedHash, currentLocation)
         check(err)
 
@@ -727,7 +720,7 @@ func recoverFromDriveFailure(driveID int, offendingFile *os.File,
         }
 
         fixedHash := currentHash.Sum(nil)
-        fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
+        // fmt.Printf("Fixed hash ID %d: %x, length = %d\n", driveID, fixedHash, len(fixedHash))
         _, err = fixedFile.WriteAt(fixedHash, currentLocation)
         check(err)
         for i := 0; i < len(otherDriveFiles); i++ {
@@ -800,7 +793,7 @@ func basicReaderWriter(filename string, outputFile *os.File,
                 }
             }
 
-            fmt.Printf("True padding size = %d\n", truePaddingSize)
+            // fmt.Printf("True padding size = %d\n", truePaddingSize)
 
             // resize the size of the true raw data
             buf = append([]byte(nil), buf[:len(buf) - truePaddingSize]...)
@@ -831,15 +824,15 @@ func basicReaderWriter(filename string, outputFile *os.File,
     */
 
     finalHash := currentHash.Sum(nil)
-    fmt.Printf("Final hash ID %d: %x, length = %d\n", ID, finalHash, len(finalHash))
+    // fmt.Printf("Final hash ID %d: %x, length = %d\n", ID, finalHash, len(finalHash))
     originalHash := make([]byte, types.MD5_SIZE)
     _, err = file.ReadAt(originalHash, rawSize - types.MD5_SIZE)
     check(err)
-    fmt.Printf("Original hash ID %d: %x, length = %d\n", ID, originalHash, len(originalHash))
+    // fmt.Printf("Original hash ID %d: %x, length = %d\n", ID, originalHash, len(originalHash))
 
     var hashesMatch bool = true
     if len(originalHash) != types.MD5_SIZE {
-        fmt.Printf("Original hash not correct length\n")
+        // fmt.Printf("Original hash not correct length\n")
         hashesMatch = false
     }
     for i := 0; i < types.MD5_SIZE; i++ {
@@ -851,18 +844,18 @@ func basicReaderWriter(filename string, outputFile *os.File,
     if !hashesMatch {
         completionChannel <- ID + 1 // to make sure ID is not 0, so that reads as error
         <- canRecoverChannel // wait until master says that this drive can recover
-        fmt.Printf("This drive is messed up, ID = %d\n", ID)
+        // fmt.Printf("This drive is messed up, ID = %d\n", ID)
         recoverFromDriveFailure(ID, file, filename, outputFile, 
                                 false, hasPadding, diskLocations, username,
                                 configs)
 
-        fmt.Printf("Successfully fixed drive ID = %d\n", ID)
+        // fmt.Printf("Successfully fixed drive ID = %d\n", ID)
     }
 
     file.Close()
 
     completionChannel <- 0 // success
-    fmt.Println("RW exiting")
+    // fmt.Println("RW exiting")
 }
 
 func basicParityChecker(filename string, parityCompletionChannel chan int, 
@@ -893,15 +886,15 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
     }
 
     finalHash := currentHash.Sum(nil)
-    fmt.Printf("Final hash parity: %x, length = %d\n", finalHash, len(finalHash))
+    // fmt.Printf("Final hash parity: %x, length = %d\n", finalHash, len(finalHash))
     originalHash := make([]byte, types.MD5_SIZE)
     _, err = parityFile.ReadAt(originalHash, rawSize - types.MD5_SIZE)
     check(err)
-    fmt.Printf("Original hash parity: %x, length = %d\n", originalHash, len(originalHash))
+    // fmt.Printf("Original hash parity: %x, length = %d\n", originalHash, len(originalHash))
 
     var hashesMatch bool = true
     if len(originalHash) != types.MD5_SIZE {
-        fmt.Printf("Original hash not correct length\n")
+        // fmt.Printf("Original hash not correct length\n")
         hashesMatch = false
     }
     for i := 0; i < types.MD5_SIZE; i++ {
@@ -923,7 +916,7 @@ func basicParityChecker(filename string, parityCompletionChannel chan int,
     parityFile.Close()
 
     parityCompletionChannel <- 0 // success
-    fmt.Println("Parity checker exiting.")
+    // fmt.Println("Parity checker exiting.")
 }
 
 /*
@@ -971,7 +964,7 @@ func GetFile(filename string, username string, diskLocations []string, configs *
     // can delete this after sent in real model
     downloadedFilename := fmt.Sprintf("downloaded-%s", filename)
 
-    fmt.Printf("Creating file: %s\n", downloadedFilename)
+    // fmt.Printf("Creating file: %s\n", downloadedFilename)
     outputFile, err := os.Create(downloadedFilename); check(err)
 
     completionChannel := make(chan int, dataDiskCount)
@@ -991,7 +984,7 @@ func GetFile(filename string, username string, diskLocations []string, configs *
     // bits stored on the parity disk
     parityFilename := fmt.Sprintf("%s/%s/%s_p", localDiskLocations[len(localDiskLocations) - 1],
                                   username, filename)
-    fmt.Printf("parity: %s\n", parityFilename)
+    // fmt.Printf("parity: %s\n", parityFilename)
     go basicParityChecker(parityFilename, parityCompletionChannel, 
                         canRecoverChannel, localDiskLocations, username, configs)
 
@@ -1018,7 +1011,7 @@ func GetFile(filename string, username string, diskLocations []string, configs *
         }
     }
 
-    fmt.Printf("All of the writers finished\n")
+    // fmt.Printf("All of the writers finished\n")
 
     // ensure parity checker finishes
     errorCode := <- parityCompletionChannel
@@ -1027,7 +1020,7 @@ func GetFile(filename string, username string, diskLocations []string, configs *
         errorCode = <- parityCompletionChannel
     }
 
-    fmt.Printf("Parity writer finished\n")
+    // fmt.Printf("Parity writer finished\n")
 
     // remove after sent
     // os.Remove(filename)
@@ -1037,7 +1030,7 @@ func GetFile(filename string, username string, diskLocations []string, configs *
     close(parityCompletionChannel)
     close(canRecoverChannel)
 
-    fmt.Printf("Closed channels\n")
+    // fmt.Printf("Closed channels\n")
 
     return downloadedFilename
 }
@@ -1069,7 +1062,7 @@ func RemoveFile(filename string, username string, diskLocations []string,
         os.Remove(parityFilename)
     }
 
-    fmt.Printf("Removed file %s\n", filename)
+    // fmt.Printf("Removed file %s\n", filename)
 }
 
 

@@ -142,7 +142,7 @@ func verifyFreeListEntry(freeListEntryBuf []byte) []byte {
     oldHash := freeListEntryBuf[len(freeListEntryBuf) - types.MD5_SIZE: len(freeListEntryBuf)]
     for i := 0; i < types.MD5_SIZE; i++ {
         if newHash[i] != oldHash[i] {
-            fmt.Printf("Found an error in free list entry\n")
+            // fmt.Printf("Found an error in free list entry\n")
             return nil
         }
     }
@@ -195,7 +195,6 @@ func getDbFilenameForFile(filename string, username string, configs *types.Confi
         evenSplit := types.ASCII / dbDiskCount // ASCII
         disk := int(filename[0]) / evenSplit // might break if not ASCII
         if disk < 0 || disk >= dbDiskCount {
-            fmt.Printf("Weird character\n")
             disk = 0
         }
         dbFilename = fmt.Sprintf("%s/%s_%d", configs.Dbdisks[disk], username, disk)
@@ -312,7 +311,7 @@ func RemoveDatabaseStructureLocal() {
             fmt.Printf("Diff stderr: %q\n", stderr.String())
         }
 
-        fmt.Printf("Diff stdout: %q\n", out.String())
+        // fmt.Printf("Diff stdout: %q\n", out.String())
     }
 }
 
@@ -330,7 +329,7 @@ func RemoveDatabaseStructure(diskLocations []string) {
             fmt.Printf("Diff stderr: %q\n", stderr.String())
         }
 
-        fmt.Printf("Diff stdout: %q\n", out.String())
+        // fmt.Printf("Diff stdout: %q\n", out.String())
     }
 }
 
@@ -517,7 +516,7 @@ func resizeAllDbDisks(username string, configs *types.Config) {
         dbFile.Close()
     }
 
-    fmt.Printf("Resized all of the disks\n")
+    // fmt.Printf("Resized all of the disks\n")
 }
 
 /*
@@ -757,7 +756,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             if currentNode.Left == 0 {
                 foundInsertionPoint = true
                 left = true
-                fmt.Printf("found insertion point at %s\n", currentNode.Filename)
+                // fmt.Printf("found insertion point at %s\n", currentNode.Filename)
             } else { // traverse down to left one
                 currentNodeLocation = currentNode.Left
             }
@@ -775,7 +774,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             dbFile.Close()
             transaction.Commit(t)
 
-            fmt.Printf("Updated entry for %s\n", filename)
+            // fmt.Printf("Updated entry for %s\n", filename)
 
             return
 
@@ -785,7 +784,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
             if currentNode.Right == 0 {
                 foundInsertionPoint = true
                 left = false
-                fmt.Printf("found insertion point at %s\n", currentNode.Filename)
+                // fmt.Printf("found insertion point at %s\n", currentNode.Filename)
             } else { // traverse down to right one
                 currentNodeLocation = currentNode.Right
             }
@@ -915,7 +914,7 @@ func AddFileSpecsToDatabase(filename string, username string, diskLocations []st
     dbFile.Close()
     transaction.Commit(t)
 
-    fmt.Printf("Successfully added filename: %s to the database\n", filename)
+    // fmt.Printf("Successfully added filename: %s to the database\n", filename)
 }
 
 
@@ -1016,7 +1015,7 @@ func GetFileEntry(filename string, username string, configs *types.Config) (*typ
     dbFile.Close()
 
     if foundFile {
-        fmt.Printf("Successfully got the file\n")
+        // fmt.Printf("Successfully got the file\n")
         return currentNode
     } else {
         return nil
@@ -1134,7 +1133,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
     }
 
     if !foundFile {
-        fmt.Printf("Did not find the file %s\n", filename)
+        // fmt.Printf("Did not find the file %s\n", filename)
         dbFile.Close()
         return nil
     }
@@ -1415,7 +1414,7 @@ func DeleteFileEntry(filename string, username string, configs *types.Config) *t
 
     transaction.Commit(t)
 
-    fmt.Printf("Successfully deleted node with filename %s\n", currentNode.Filename)
+    // fmt.Printf("Successfully deleted node with filename %s\n", currentNode.Filename)
 
     return currentNode // success
 }

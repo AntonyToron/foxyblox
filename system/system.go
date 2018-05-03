@@ -147,7 +147,7 @@ func AddFile(filename string, username string, diskLocations []string) {
     // add file to database (diskLocations = location that the file was stored at)
     database.AddFileSpecsToDatabase(filename, username, diskLocations, configs)
 
-    fmt.Printf("Added file %s to system, for user %s\n", filename, username)
+    // fmt.Printf("Added file %s to system, for user %s\n", filename, username)
 }
 
 // returns the location at which the downloaded and assembled file is temporarily stored now
@@ -158,7 +158,7 @@ func GetFile(filename string, username string) string {
     // first fetch where it is stored in database
     entry := database.GetFileEntry(filename, username, configs)
     if entry == nil {
-        fmt.Printf("Did not find the file %s\n", filename)
+        // fmt.Printf("Did not find the file %s\n", filename)
         return ""
     }
 

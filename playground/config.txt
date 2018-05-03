@@ -1,0 +1,1 @@
+{"Sys":0,"Dbdisks":["storage/dbdrive0","storage/dbdrive1","storage/dbdrive2","storage/dbdrive3"],"Datadisks":["storage/drive0","storage/drive1","storage/drive2","storage/drive3"],"DataDiskCount":3,"ParityDiskCount":1}
