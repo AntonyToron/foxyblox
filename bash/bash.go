@@ -24,6 +24,7 @@ import (
     "time"
     "os/exec"
     "math/rand"
+    "math"
     "bytes"
     // "runtime"
 )
@@ -179,7 +180,8 @@ func Run(args []string) {
             fmt.Printf("Created default config file, can change it now.\n")
 
         case "test":
-            runTests()
+            runTest1()
+            runTest2()
 
             fmt.Printf("Ran tests\n")
 
@@ -284,15 +286,15 @@ const ROUNDS = 10
 const FILE_SIZE_CAP = 32 // 32
 const FILE_SIZE_MIN = 3
 const NAME_SIZE = 24
-const DATABASE_SIZE = 100
-const DATABASE_SIZE_CAP = 4096
+const DATABASE_SIZE = 50
+const DATABASE_SIZE_CAP = 512
 const TEST_AMOUNT = 100
 var database_size_cap int = 2048
 // 86 to 112
 // var letterRunes = []rune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$^&()_+[]{}")
 var letterRunes = []rune("VWXYZ[]^_abcdefghijklmnop") // all on drive 1
 
-func runTests() {
+func runTest1() {
     // test adding to database at different sizes
     // 2^30 = 1 GB, 2^32 = 4 GB, 2^34 = 16 GB
     diskLocations := make([]string, TESTING_DISK_COUNT + 1)
@@ -397,6 +399,111 @@ func runTests() {
         check(err)
 
         removeDatabaseStructureLocal()
+    }
+
+    removeDatabaseStructureLocal()
+}
+
+func runTest2() {
+    initializeDatabaseStructureLocal()
+
+    // 2^30 = 1 GB, 2^32 = 4 GB, 2^34 = 16 GB
+    diskLocations := make([]string, TESTING_DISK_COUNT + 1)
+    for i := 0; i < len(diskLocations); i++ {
+        diskLocations[i] = fmt.Sprintf("./storage/drive%d", i)
+    }
+
+    /*
+        Prepopulate the database with about 50-100 values, just for some average
+        number, can be small files
+    */
+    databaseFiles := make([]string, DATABASE_SIZE)
+
+    for i := 0; i < DATABASE_SIZE; i++ {
+        testingFilename := randStringRunes(NAME_SIZE)
+        username := "atoron" // all on same user for testing
+
+        fileSize := int64(SMALL_FILE_SIZE)
+
+        databaseFiles[i] = testingFilename
+
+        // create the file, with random data
+        createRandomFile(testingFilename, fileSize)
+
+        system.AddFile(testingFilename, username, diskLocations)
+    }
+    
+    // run the tests
+    for i := FILE_SIZE_MIN; i <= FILE_SIZE_CAP; i++ {
+        testingFilename := randStringRunes(NAME_SIZE)
+        username := "atoron" // all on same user for testing
+
+        fileSize := int64(math.Pow(2, float64(i)))
+
+        // create the file, with random data
+        createRandomFile(testingFilename, fileSize)
+
+        testResults := make([]time.Duration, TEST_AMOUNT)
+
+        // test saving it
+        for j := 0; j < TEST_AMOUNT; j++ {
+            start := time.Now()
+            // preferably switch up the name of the file every time (but
+            // this would increase the database every time...), technically
+            // should be reconstructing the tree every time for this test
+            // to really be accurate, can just re-enter the same filename
+            // and everything multiple times, it is idempotent anyway, but
+            // actually it's faster to just add when you already have
+            // entry in the database, so this won't be an accurate reading
+
+            system.AddFile(testingFilename, username, diskLocations)
+
+            // just going to delete the file after, so that the runtimes
+            // make sense, at least it'll just be a multiple of 2 basically
+            // for all of the, so get an idea of this for different file
+            // sizes (note that the file size doesn't matter for the
+            // database itself)
+
+            r := system.DeleteFile(testingFilename, username)
+            if r == nil {
+                return
+            }
+
+            t := time.Now()
+            elapsed := t.Sub(start)
+            testResults[j] = elapsed
+
+            // since deleted, it won't be "cached" anymore, and save time
+            // will be the same across runs
+
+            // maybe can rename the file here, so that on the next round it's
+            // a little different
+            newName := randStringRunes(NAME_SIZE)
+            err := os.Rename(testingFilename, newName)
+            check(err)
+            testingFilename = newName
+        }
+
+        // compute the average over the results
+        sum := time.Duration(0)
+        for i := 0; i < len(testResults); i++ {
+            sum += testResults[i]
+        }
+        average := sum / time.Duration(float64(len(testResults)))
+
+        // print the result
+        fmt.Printf("File size 2^%d, took about ", i)
+        fmt.Print(average)
+        fmt.Println("")
+
+        err := os.Remove(testingFilename)
+        check(err)
+    }
+
+    // clean up
+    for i := 0; i < DATABASE_SIZE; i++ {
+        err := os.Remove(databaseFiles[i])
+        check(err)
     }
 
     removeDatabaseStructureLocal()
