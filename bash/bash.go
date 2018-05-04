@@ -18,6 +18,8 @@ import (
     "foxyblox/system"
     "foxyblox/types"
     "foxyblox/cron"
+    "foxyblox/server"
+    "foxyblox/client"
     "strconv"
 
 
@@ -184,6 +186,16 @@ func Run(args []string) {
             runTest2()
 
             fmt.Printf("Ran tests\n")
+
+        case "server":
+            server.Run()
+
+            fmt.Printf("Finished running server\n")
+
+        case "client":
+            client.Run()
+
+            fmt.Printf("Finished running client\n")
 
         default:
             fmt.Printf("Error: unsupported command\n")
