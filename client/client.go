@@ -124,7 +124,7 @@ func SendFile(fileSize int64, url string) {
 
 // sample usage
 func Run() {
-    targetUrl := "http://localhost:8080/upload/"
+    targetUrl := "http://54.84.27.23:8080/upload/"
 
     for i := FILE_SIZE_MIN; i < FILE_SIZE_CAP; i++ {
         fileSize := int64(math.Pow(2, float64(i)))
