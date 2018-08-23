@@ -28,3 +28,7 @@ Entrypoint of the code, runs the command-line by default.
 
 ## Overall
 Each folder/package contains a file called <package_name>_test.go. These contain the testing code for each package.
+
+## Technologies Used:
+- Golang
+- HTTP
