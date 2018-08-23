@@ -31,4 +31,4 @@ Each folder/package contains a file called <package_name>_test.go. These contain
 
 ## Technologies Used:
 - Golang
-- HTTP
+- HTML (for basic front-end interface)
